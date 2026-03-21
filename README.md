@@ -1,33 +1,27 @@
-<!-- markdownlint-disable MD012 MD013 MD022 MD032 MD024 MD025-->
 ![CI](https://github.com/S3GYR/segyr-bot/actions/workflows/ci.yml/badge.svg)
 
-# SEGYR Bot 🤖
+# 🚀 SEGYR Bot
 
 > Autonomous AI orchestration platform with self-repair, policy-driven decisions, and real-time observability.
 
 ---
 
-# 🇬🇧 ENGLISH VERSION
-
-## 🚀 What is SEGYR?
+## 🌍 Overview
 
 SEGYR is not just an AI agent.
 
-It is a **self-monitoring and self-repairing AI system** capable of:
-- Evaluating its own health
-- Making decisions via a policy engine
-- Executing corrective actions
-- Validating impact through a scoring system
+It is a **self-monitoring, decision-making, and self-repairing system** designed to operate reliably in production environments.
 
 ---
 
-## 🎯 Core Principles
+## 🎯 Core Capabilities
 
-- Autonomy first
-- Self-repair loop
-- Observability-driven
-- Policy-based decisions
-- Resilience by design
+* 🤖 Autonomous decision-making
+* 🔁 Self-repair loop
+* 📊 Observability-driven architecture
+* ⚖️ Policy-based execution
+* 🧠 Memory & context persistence
+* ⚡ Real-time API + dashboard
 
 ---
 
@@ -37,7 +31,8 @@ It is a **self-monitoring and self-repairing AI system** capable of:
 flowchart TD
 
 Dashboard --> API[FastAPI API]
-API --> Agent[Agent Loop (Skills)]
+
+API --> Agent[Agent Loop - Skills]
 API --> Policy[Policy Engine]
 
 Agent --> Repair[Auto-Repair]
@@ -48,43 +43,57 @@ Repair --> Redis[Redis Cache / Memory]
 
 ---
 
-## 🧠 Architecture Overview
+## 🧠 Architecture Layers
 
 ### 🤖 Agent Layer
-- core/agent/loop.py
-- segyr_bot/skills/router.py
-- segyr_bot/skills/loader.py
+
+* `core/agent/loop.py`
+* `segyr_bot/skills/router.py`
+* `segyr_bot/skills/loader.py`
 
 ### 🧠 Intelligence Layer
-- core/monitoring/policy_engine.py
+
+* `core/monitoring/policy_engine.py`
 
 ### ⚙️ Execution Layer
-- core/monitoring/auto_repair.py
+
+* `core/monitoring/auto_repair.py`
 
 ### 🗄️ Data Layer
-- Redis cache
-- Memory
-- Queue system
+
+* Redis (cache + memory)
+* Queue system
 
 ### 📊 Observability Layer
-- /health/full
-- /metrics
-- logs JSONL
+
+* `/health`
+* `/health/full`
+* `/metrics`
+* JSON logs
 
 ### 🖥️ Interface Layer
-- /dashboard
-- /dashboard/data
-- /dashboard/summary
+
+* `/dashboard`
+* `/dashboard/data`
+* `/dashboard/summary`
 
 ---
 
-## 🛠️ Installation
+## 🛠️ Installation (Local)
 
 ```bash
+git clone https://github.com/S3GYR/segyr-bot.git
+cd segyr-bot
+
 python -m venv .venv
-source .venv/bin/activate
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
+
 pip install -r requirements.txt
 ```
+
+---
+
+## 🎨 Frontend
 
 ```bash
 cd frontend
@@ -94,42 +103,104 @@ npm run build
 
 ---
 
-## ▶️ Usage
+## ▶️ Run the API
 
 ```bash
-uvicorn api.main:app --reload
+uvicorn api.main:app --host 0.0.0.0 --port 8000
+```
+
+👉 API available at:
+
+```
+http://localhost:8000
 ```
 
 ---
 
-# 🇫🇷 VERSION FRANÇAISE
+## 🐳 Docker (Production Ready)
 
-## 🚀 Qu’est-ce que SEGYR ?
+### Build locally
 
-SEGYR est un système IA autonome capable de :
-- analyser son état
-- prendre des décisions
-- s’auto-corriger
-- mesurer les impacts
+```bash
+docker build -t segyr-bot .
+```
 
----
+### Run
 
-## 🎯 Principes
-
-- Autonomie
-- Auto-réparation
-- Observabilité
-- Décisions pilotées
-- Résilience
+```bash
+docker run -p 8000:8000 segyr-bot
+```
 
 ---
 
-## 🏗️ Architecture
+## 📦 Docker Image (GHCR)
+
+```bash
+docker pull ghcr.io/S3GYR/segyr-bot:latest
+```
+
+---
+
+## 🔐 Environment Variables
+
+```env
+SEGYR_DB_PASSWORD=your_password
+SEGYR_JWT_SECRET=your_secret
+SEGYR_API_AUTH_TOKEN=your_token
+
+SEGYR_REDIS_URL=redis://localhost:6379/0
+SEGYR_LOG_LEVEL=INFO
+SEGYR_DEBUG=false
+```
+
+---
+
+## 🧪 Testing
+
+```bash
+pytest -q
+```
+
+---
+
+## ⚙️ CI/CD
+
+* ✅ GitHub Actions (tests + build)
+* ✅ Docker image build & push (GHCR)
+* ✅ Ready for deployment
+
+---
+
+## 🇫🇷 Version Française
+
+### 🚀 Présentation
+
+SEGYR est une plateforme d’orchestration IA autonome capable de :
+
+* analyser son état
+* prendre des décisions
+* s’auto-corriger
+* mesurer ses performances
+
+---
+
+### 🎯 Fonctionnalités
+
+* Autonomie complète
+* Boucle d’auto-réparation
+* Observabilité intégrée
+* Décisions pilotées par règles
+* Mémoire persistante
+
+---
+
+### 🏗️ Architecture
 
 ```mermaid
 flowchart TD
 
 Dashboard --> API[FastAPI API]
+
 API --> Agent[Agent Loop]
 API --> Policy[Policy Engine]
 
@@ -141,35 +212,7 @@ Repair --> Redis[Cache / Memory]
 
 ---
 
-## 🧠 Structure
-
-### Agent
-- core/agent/loop.py
-
-### Intelligence
-- policy engine
-
-### Execution
-- auto repair
-
-### Data
-- Redis
-
-### Interface
-- dashboard
-
----
-
-## 🛠️ Installation
-
-```bash
-python -m venv .venv
-pip install -r requirements.txt
-```
-
----
-
-## ▶️ Utilisation
+### ▶️ Lancement
 
 ```bash
 uvicorn api.main:app --reload
@@ -179,9 +222,25 @@ uvicorn api.main:app --reload
 
 ## 🧠 Vision
 
-Créer un système IA capable de :
-- s’auto-réparer
-- prendre des décisions autonomes
-- piloter des systèmes complexes
-## 🧠 Architecture Overview
+SEGYR vise à devenir :
 
+> Une IA capable de piloter, corriger et optimiser des systèmes complexes de manière autonome.
+
+---
+
+## 📜 License
+
+MIT License
+
+---
+
+## 🤝 Contribution
+
+Pull requests welcome.
+For major changes, open an issue first.
+
+---
+
+## 🔥 SEGYR
+
+> “Autonomous systems that think, act, and repair themselves.”
