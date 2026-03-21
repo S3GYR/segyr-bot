@@ -7,7 +7,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: S3GYR/segyr-bot
+  IMAGE_NAME: s3gyr/segyr-bot   # ✅ minuscule
 
 jobs:
   docker:
@@ -21,8 +21,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # ✅ login propre sans secret custom
       - name: Login GHCR
-        run: echo "${{ secrets.REGISTRY_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
       - name: Extract version
         id: meta
