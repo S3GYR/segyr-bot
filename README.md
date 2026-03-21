@@ -1,4 +1,5 @@
 <!-- markdownlint-disable MD012 MD013 MD022 MD032 MD024 MD025-->
+![CI](https://github.com/S3GYR/segyr-bot/actions/workflows/ci.yml/badge.svg)
 
 # SEGYR Bot 🤖
 

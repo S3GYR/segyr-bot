@@ -1,84 +1,115 @@
 version: "3.9"
 
 services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: ${SEGYR_DB_USER:-segyr}
+      POSTGRES_PASSWORD: ${SEGYR_DB_PASSWORD:?SEGYR_DB_PASSWORD is required}
+      POSTGRES_DB: ${SEGYR_DB_NAME:-segyrbot}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${SEGYR_DB_USER:-segyr} -d ${SEGYR_DB_NAME:-segyrbot}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+    networks:
+      - backend
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1000"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - backend
+
   api:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: segyr-api
     env_file:
       - .env
     environment:
-      SEGYR_DB_HOST: ${SEGYR_DB_HOST:-postgres}
-      SEGYR_DB_PORT: ${SEGYR_DB_PORT:-5432}
+      SEGYR_DB_HOST: postgres
+      SEGYR_DB_PORT: 5432
       SEGYR_DB_NAME: ${SEGYR_DB_NAME:-segyrbot}
       SEGYR_DB_USER: ${SEGYR_DB_USER:-segyr}
-      SEGYR_DB_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-      SEGYR_JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
-      SEGYR_TELEGRAM_BOT_TOKEN: ${TELEGRAM_TOKEN:-}
-      SEGYR_API_AUTH_TOKEN: ${SEGYR_API_AUTH_TOKEN:-segyr-token}
+      SEGYR_DB_PASSWORD: ${SEGYR_DB_PASSWORD:?SEGYR_DB_PASSWORD is required}
+      SEGYR_REDIS_URL: ${SEGYR_REDIS_URL:-redis://redis:6379/0}
+      REDIS_URL: ${SEGYR_REDIS_URL:-redis://redis:6379/0}
+      SEGYR_JWT_SECRET: ${SEGYR_JWT_SECRET:?SEGYR_JWT_SECRET is required}
+      SEGYR_API_AUTH_TOKEN: ${SEGYR_API_AUTH_TOKEN:?SEGYR_API_AUTH_TOKEN is required}
+      SEGYR_LOG_LEVEL: ${SEGYR_LOG_LEVEL:-INFO}
+      SEGYR_DEBUG: "false"
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     ports:
       - "8000:8000"
     volumes:
-      - ./:/app
-      - ./logs:/app/logs
-      - ./workspace:/app/workspace
-    command: ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+      - logs_data:/app/logs
+      - workspace_data:/app/workspace
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
       interval: 30s
       timeout: 5s
-      retries: 3
-
-  postgres:
-    image: postgres:15-alpine
-    container_name: segyr-postgres
-    environment:
-      POSTGRES_USER: ${SEGYR_DB_USER:-segyr}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
-      POSTGRES_DB: ${SEGYR_DB_NAME:-segyrbot}
-    ports:
-      - "5432:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-
-  redis:
-    image: redis:7-alpine
-    container_name: segyr-redis
-    ports:
-      - "6379:6379"
-    volumes:
-      - redisdata:/data
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+    init: true
+    networks:
+      - backend
 
   worker:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: segyr-worker
     env_file:
       - .env
     environment:
-      SEGYR_DB_HOST: ${SEGYR_DB_HOST:-postgres}
-      SEGYR_DB_PORT: ${SEGYR_DB_PORT:-5432}
+      SEGYR_DB_HOST: postgres
+      SEGYR_DB_PORT: 5432
       SEGYR_DB_NAME: ${SEGYR_DB_NAME:-segyrbot}
       SEGYR_DB_USER: ${SEGYR_DB_USER:-segyr}
-      SEGYR_DB_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-      SEGYR_JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
-      SEGYR_TELEGRAM_BOT_TOKEN: ${TELEGRAM_TOKEN:-}
+      SEGYR_DB_PASSWORD: ${SEGYR_DB_PASSWORD:?SEGYR_DB_PASSWORD is required}
+      SEGYR_REDIS_URL: ${SEGYR_REDIS_URL:-redis://redis:6379/0}
+      REDIS_URL: ${SEGYR_REDIS_URL:-redis://redis:6379/0}
+      SEGYR_JWT_SECRET: ${SEGYR_JWT_SECRET:?SEGYR_JWT_SECRET is required}
+      SEGYR_LOG_LEVEL: ${SEGYR_LOG_LEVEL:-INFO}
+      SEGYR_DEBUG: "false"
     depends_on:
-      - postgres
-      - redis
-    volumes:
-      - ./:/app
-      - ./logs:/app/logs
-      - ./workspace:/app/workspace
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     command: ["python", "-m", "modules.worker.worker"]
+    volumes:
+      - logs_data:/app/logs
+      - workspace_data:/app/workspace
+    restart: unless-stopped
+    init: true
+    networks:
+      - backend
 
 volumes:
   pgdata:
   redisdata:
+  logs_data:
+  workspace_data:
+
+networks:
+  backend:
+    driver: bridge

@@ -1,29 +1,63 @@
-FROM python:3.12-slim
+FROM node:20-alpine AS frontend-builder
 
-# System deps
-RUN apt-get update \ 
-  && apt-get install -y --no-install-recommends curl build-essential \ 
+WORKDIR /frontend
+
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+
+COPY frontend/ ./
+RUN npm run build
+
+
+FROM python:3.11-slim AS backend-builder
+
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /build
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends build-essential \
   && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt ./
+RUN python -m pip install --upgrade pip \
+  && pip wheel --wheel-dir=/wheels -r requirements.txt
+
+
+FROM python:3.11-slim AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1
 
 WORKDIR /app
 
-# Install deps
-COPY pyproject.toml README.md ./
+RUN groupadd --system app \
+  && useradd --system --gid app --create-home app
+
+COPY --from=backend-builder /wheels /wheels
+COPY requirements.txt ./
+RUN python -m pip install --upgrade pip \
+  && pip install --no-index --find-links=/wheels -r requirements.txt \
+  && rm -rf /wheels
+
 COPY core/ core/
 COPY agents/ agents/
 COPY modules/ modules/
 COPY tools/ tools/
 COPY api/ api/
 COPY config/ config/
-COPY workspace/ workspace/
+COPY segyr_bot/ segyr_bot/
+COPY run_redis_e2e.py ./
+COPY --from=frontend-builder /frontend/dist ./frontend/dist
 
-RUN pip install --no-cache-dir --upgrade pip \ 
-  && pip install --no-cache-dir hatchling \ 
-  && pip install --no-cache-dir -e .
+RUN mkdir -p /app/logs /app/workspace \
+  && chown -R app:app /app
 
-ENV PYTHONUNBUFFERED=1 \
-    UVICORN_WORKERS=4
+USER app
 
 EXPOSE 8000
 
-CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2", "--proxy-headers"]

@@ -1,4 +1,17 @@
-# Compatibility file for environments that install from requirements.txt
-# Project dependencies are defined in pyproject.toml.
--e .
-bcrypt>=4.1.0
+# Pinned application dependencies for reproducible Docker builds.
+aiohttp==3.9.5
+bcrypt==4.1.3
+fastapi==0.115.0
+uvicorn[standard]==0.30.0
+pydantic==2.8.2
+pydantic-settings==2.2.1
+httpx==0.28.1
+litellm==1.52.3
+loguru==0.7.2
+psycopg[binary]==3.2.3
+python-dotenv==1.0.1
+redis==5.0.8
+requests==2.32.3
+rq==1.16.2
+tiktoken==0.7.0
+pytest==8.3.3

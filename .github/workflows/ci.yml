@@ -165,3 +165,46 @@ jobs:
           PY
 
           echo "run_redis_e2e.py exit code: ${E2E_EXIT}"
+
+  docker-build-and-smoke:
+    runs-on: ubuntu-latest
+    needs: test-and-e2e
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t segyr-bot:ci .
+
+      - name: Smoke test container /health
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          docker run -d --name segyr-api-ci \
+            -p 8000:8000 \
+            -e SEGYR_DB_PASSWORD=ci-db-password-strong \
+            -e SEGYR_JWT_SECRET=ci-jwt-secret-strong-32chars \
+            -e SEGYR_API_AUTH_TOKEN=ci-api-token-strong \
+            -e SEGYR_DB_HOST=127.0.0.1 \
+            -e SEGYR_DB_PORT=5432 \
+            -e SEGYR_DB_NAME=segyrbot \
+            -e SEGYR_DB_USER=segyr \
+            -e SEGYR_REDIS_URL=redis://127.0.0.1:6379/0 \
+            segyr-bot:ci
+
+          cleanup() {
+            docker logs segyr-api-ci >/tmp/segyr-api.log 2>&1 || true
+            docker rm -f segyr-api-ci >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          for i in {1..60}; do
+            if curl -fsS "http://127.0.0.1:8000/health" >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+
+          curl -fsS "http://127.0.0.1:8000/health"

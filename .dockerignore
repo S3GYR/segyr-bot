@@ -1,0 +1,37 @@
+# VCS
+.git
+.gitignore
+.github
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Node artifacts
+frontend/node_modules/
+frontend/.vite/
+
+# Local environment & secrets
+.env
+.env.*
+!.env.example
+
+# Runtime/generated data
+logs/
+workspace/sessions/
+workspace/memory/*.jsonl
+
+# Build/test/docs artifacts
+coverage/
+htmlcov/
+*.log
+PROGRESS.md

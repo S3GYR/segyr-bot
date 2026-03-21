@@ -96,7 +96,7 @@ class Settings(BaseSettings):
     redis_url: str = Field(default="redis://localhost:6379/0", alias="SEGYR_REDIS_URL")
     redis_enabled: bool = Field(default=True, alias="SEGYR_REDIS_ENABLED")
     cache_ttl: int = Field(default=300, alias="SEGYR_CACHE_TTL")
-    api_auth_token: str | None = Field(default="segyr-token", alias="SEGYR_API_AUTH_TOKEN")
+    api_auth_token: str | None = Field(default=None, alias="SEGYR_API_AUTH_TOKEN")
     api_token_header: str = Field(default="X-API-Token", alias="SEGYR_API_TOKEN_HEADER")
     jwt_secret: str = Field(default="CHANGE_ME_JWT_SECRET", alias="SEGYR_JWT_SECRET")
     jwt_algorithm: str = Field(default="HS256", alias="SEGYR_JWT_ALGO")
@@ -137,6 +137,8 @@ class Settings(BaseSettings):
 
         _ensure(self.jwt_secret, "SEGYR_JWT_SECRET")
         _ensure(self.db.password, "SEGYR_DB_PASSWORD")
+        if self.api_auth_token and len(self.api_auth_token.strip()) < 16:
+            raise ValueError("Configuration invalide: SEGYR_API_AUTH_TOKEN trop court (min 16 caractères)")
         # SMTP et Telegram optionnels: valider uniquement si fournis
         _ensure(self.smtp_password, "SEGYR_SMTP_PASSWORD", mandatory=False)
         _ensure(self.telegram_bot_token, "SEGYR_TELEGRAM_BOT_TOKEN", mandatory=False)
