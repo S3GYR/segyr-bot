@@ -4,7 +4,6 @@ import pytest
 
 from modules.finance.cashflow import compute_cashflow
 from tools.finance_tool import FinanceTool
-from tests.conftest import FakeMemoryStore
 
 
 def test_compute_cashflow_positive():
@@ -27,8 +26,8 @@ def test_compute_cashflow_negative():
 
 
 @pytest.mark.asyncio
-async def test_finance_tool_cashflow():
-    store = FakeMemoryStore()
+async def test_finance_tool_cashflow(fake_store):
+    store = fake_store
     store.add_facture(None, 100, None, None, None)
     store.add_facture(None, 200, None, None, None)
     store.update_facture(2, {"statut": "fournisseur_impayee"})

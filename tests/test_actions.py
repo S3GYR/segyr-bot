@@ -4,13 +4,12 @@ import pytest
 from unittest.mock import AsyncMock
 
 from agents.action_engine import ActionEngine
-from tests.conftest import FakeMemoryStore
 
 
 @pytest.mark.asyncio
-async def test_actions_relance_and_decision_history():
+async def test_actions_relance_and_decision_history(fake_store):
     engine = ActionEngine()
-    store = FakeMemoryStore()
+    store = fake_store
     registry = AsyncMock()
     registry.execute = AsyncMock(return_value={"relances": ["F1"]})
 

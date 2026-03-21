@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from datetime import date
-from typing import Any, Dict, List
+from typing import TYPE_CHECKING, Any, Dict, List
 from unittest.mock import AsyncMock
 
 import pytest
@@ -13,7 +13,8 @@ os.environ.setdefault("SEGYR_DB_PASSWORD", "test-db-password")
 os.environ.setdefault("SEGYR_JWT_SECRET", "test-jwt-secret-32-characters-min")
 os.environ.setdefault("SEGYR_API_AUTH_TOKEN", "test-api-auth-token")
 
-from core.agent import AgentEngine
+if TYPE_CHECKING:
+    from core.agent import AgentEngine
 
 
 class FakeMemoryStore:
@@ -159,7 +160,9 @@ class FakeMemoryStore:
         self.projects[pid] = row
         return row
 
-    def list_projects(self) -> list[dict]:
+    def list_projects(self, entreprise_id: str | None = None) -> list[dict]:
+        if entreprise_id:
+            return [p for p in self.projects.values() if p.get("entreprise_id") == entreprise_id]
         return list(self.projects.values())
 
     def get_project(self, project_id: int) -> dict | None:
@@ -234,7 +237,9 @@ def fake_store() -> FakeMemoryStore:
 
 
 @pytest.fixture()
-def test_engine(fake_store: FakeMemoryStore) -> AgentEngine:
+def test_engine(fake_store: FakeMemoryStore) -> "AgentEngine":
+    from core.agent import AgentEngine
+
     engine = AgentEngine(store=fake_store)
     engine.llm.chat = AsyncMock(return_value="Hello")
     return engine
