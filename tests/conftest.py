@@ -68,6 +68,13 @@ class FakeMemoryStore:
         row.update(data)
         return row
 
+    def update_client_score(self, client_id: int, score: float) -> dict | None:
+        row = self.clients.get(client_id)
+        if not row:
+            return None
+        row["score_client"] = score
+        return row
+
     # Factures
     def add_facture(self, client_id: int | None, montant_ht: float, due_date: str | None, reference: str | None, notes: str | None, entreprise_id: str | None = None) -> Dict[str, Any]:
         fid = self._fid
