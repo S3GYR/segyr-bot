@@ -1,0 +1,47 @@
+name: SEGYR Docker Build & Push
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: S3GYR/segyr-bot
+
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Login GHCR
+        run: echo "${{ secrets.REGISTRY_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Extract version
+        id: meta
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/}
+          else
+            VERSION=latest
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Build image
+        run: docker build -t $REGISTRY/$IMAGE_NAME:${{ steps.meta.outputs.version }} .
+
+      - name: Push image
+        run: docker push $REGISTRY/$IMAGE_NAME:${{ steps.meta.outputs.version }}
+
+      - name: Tag latest (if tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          docker tag $REGISTRY/$IMAGE_NAME:${{ steps.meta.outputs.version }} $REGISTRY/$IMAGE_NAME:latest
+          docker push $REGISTRY/$IMAGE_NAME:latest
