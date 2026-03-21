@@ -91,6 +91,14 @@ class FakeMemoryStore:
             return [f for f in self.factures.values() if f.get("entreprise_id") == entreprise_id]
         return list(self.factures.values())
 
+    def list_factures_by_client(self, client_id: int, entreprise_id: str | None = None) -> list[dict]:
+        return [
+            f
+            for f in self.factures.values()
+            if f.get("client_id") == client_id
+            and (entreprise_id is None or f.get("entreprise_id") == entreprise_id)
+        ]
+
     def get_facture(self, facture_id: int) -> dict | None:
         return self.factures.get(facture_id)
 
