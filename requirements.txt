@@ -17,3 +17,4 @@ rq==1.16.2
 tiktoken==0.7.0
 pytest==8.3.3
 pytest-asyncio==0.24.0
+PyJWT==2.9.0
