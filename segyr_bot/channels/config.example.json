@@ -1,0 +1,22 @@
+{
+  "channels": {
+    "segyr_internal": {
+      "enabled": true,
+      "allowFrom": ["*"]
+    },
+    "webhook": {
+      "enabled": true,
+      "host": "0.0.0.0",
+      "port": 8090,
+      "route": "/message",
+      "responseTimeoutS": 20,
+      "allowFrom": ["segyr_test", "*"]
+    },
+    "telegram": {
+      "enabled": false,
+      "token": "",
+      "allowFrom": ["*"],
+      "pollIntervalS": 1.0
+    }
+  }
+}

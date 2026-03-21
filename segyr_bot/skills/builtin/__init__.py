@@ -1,0 +1,1 @@
+"""Skills builtin SEGYR-BOT."""

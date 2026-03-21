@@ -1,0 +1,49 @@
+[project]
+name = "segyr-bot"
+version = "0.1.0"
+description = "SEGYR-BOT: base agent IA métier (conducteur de travaux / responsable d'affaires)"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "SEGYR" }]
+keywords = ["agent", "llm", "segyr", "ollama", "fastapi"]
+dependencies = [
+  "aiohttp>=3.9.0",
+  "bcrypt>=4.1.0",
+  "fastapi>=0.115.0",
+  "uvicorn[standard]>=0.30.0",
+  "pydantic>=2.8.0",
+  "pydantic-settings>=2.2.1",
+  "httpx>=0.28.0",
+  "litellm>=1.0.0",
+  "loguru>=0.7.0",
+  "psycopg[binary]>=3.1.0",
+  "python-dotenv>=1.0.0",
+  "redis>=5.0.0",
+  "requests>=2.31.0",
+  "rq>=1.16.0",
+  "tiktoken>=0.7.0",
+  "pytest>=8.0.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = [
+  "core/**/*.py",
+  "agents/**/*.py",
+  "modules/**/*.py",
+  "segyr_bot/**/*.py",
+  "tools/**/*.py",
+  "api/**/*.py",
+  "config/**/*.py",
+  "workspace/memory/*",
+  "README.md",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["core", "agents", "modules", "segyr_bot", "tools", "api", "config"]
+
+[tool.ruff]
+line-length = 100

@@ -1,0 +1,92 @@
+from __future__ import annotations
+
+import hashlib
+import importlib
+import sys
+import types
+
+import pytest
+
+
+def _ensure_jwt_stub(monkeypatch: pytest.MonkeyPatch) -> None:
+    try:
+        import jwt  # noqa: F401
+    except ImportError:
+        class ExpiredSignatureError(Exception):
+            pass
+
+        class InvalidTokenError(Exception):
+            pass
+
+        jwt_stub = types.SimpleNamespace(
+            encode=lambda payload, secret, algorithm=None: "stub-token",
+            decode=lambda token, secret, algorithms=None: {},
+            ExpiredSignatureError=ExpiredSignatureError,
+            InvalidTokenError=InvalidTokenError,
+        )
+        monkeypatch.setitem(sys.modules, "jwt", jwt_stub)
+
+
+@pytest.fixture()
+def auth_utils(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("SEGYR_JWT_SECRET", "test-jwt-secret")
+    monkeypatch.setenv("SEGYR_DB_PASSWORD", "test-db-password")
+    _ensure_jwt_stub(monkeypatch)
+
+    from modules.auth import utils as auth_utils_module
+
+    return importlib.reload(auth_utils_module)
+
+
+def test_hash_password_uses_bcrypt_and_verify_roundtrip(auth_utils) -> None:
+    if auth_utils.bcrypt is None:
+        pytest.skip("bcrypt non disponible dans l'environnement")
+
+    password = "SuperSecret!123"
+
+    hashed = auth_utils.hash_password(password)
+
+    assert hashed.startswith("$2")
+    assert auth_utils.verify_password(password, hashed) is True
+
+
+@pytest.mark.parametrize(
+    ("candidate", "expected"),
+    [("SuperSecret!123", True), ("wrong-password", False)],
+)
+def test_verify_password_bcrypt_mode(auth_utils, candidate: str, expected: bool) -> None:
+    if auth_utils.bcrypt is None:
+        pytest.skip("bcrypt non disponible dans l'environnement")
+
+    hashed = auth_utils.hash_password("SuperSecret!123")
+
+    assert auth_utils.verify_password(candidate, hashed) is expected
+
+
+def test_fallback_sha256_mode_when_bcrypt_missing(
+    auth_utils,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(auth_utils, "bcrypt", None)
+
+    hashed = auth_utils.hash_password("fallback-password")
+
+    assert hashed.startswith("sha256$")
+    assert auth_utils.verify_password("fallback-password", hashed) is True
+    assert auth_utils.verify_password("bad", hashed) is False
+
+
+def test_verify_password_accepts_legacy_plain_sha256(auth_utils) -> None:
+    password = "legacy-password"
+    legacy_hash = hashlib.sha256(password.encode("utf-8")).hexdigest()
+
+    assert auth_utils.verify_password(password, legacy_hash) is True
+    assert auth_utils.verify_password("incorrect", legacy_hash) is False
+
+
+@pytest.mark.parametrize(
+    "invalid_hash",
+    ["", "   ", "not-a-hash", "sha256$", "sha256$xyz", "$2b$invalid"],
+)
+def test_verify_password_returns_false_on_invalid_hashes(auth_utils, invalid_hash: str) -> None:
+    assert auth_utils.verify_password("any-password", invalid_hash) is False

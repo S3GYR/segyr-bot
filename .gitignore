@@ -1,0 +1,39 @@
+# Python cache / bytecode
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Node / frontend dependencies
+frontend/node_modules/
+frontend/.vite/
+
+# Logs and runtime artifacts
+*.log
+logs/*.jsonl
+!logs/.gitkeep
+
+# Runtime workspace data
+workspace/sessions/*.jsonl
+workspace/memory/*.jsonl
+!workspace/memory/.gitkeep
+!workspace/memory/HISTORY.md
+!workspace/memory/MEMORY.md
+
+# Secrets / local env
+.env
+.env.*
+!.env.example
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

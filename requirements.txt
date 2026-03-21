@@ -1,0 +1,4 @@
+# Compatibility file for environments that install from requirements.txt
+# Project dependencies are defined in pyproject.toml.
+-e .
+bcrypt>=4.1.0
