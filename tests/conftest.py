@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+import os
 from datetime import date
 from typing import Any, Dict, List
 from unittest.mock import AsyncMock
 
 import pytest
+
+# Ensure mandatory settings are available before app imports during test collection.
+os.environ.setdefault("SEGYR_TEST_MODE", "true")
+os.environ.setdefault("SEGYR_DB_PASSWORD", "test-db-password")
+os.environ.setdefault("SEGYR_JWT_SECRET", "test-jwt-secret-32-characters-min")
+os.environ.setdefault("SEGYR_API_AUTH_TOKEN", "test-api-auth-token")
 
 from core.agent import AgentEngine
 

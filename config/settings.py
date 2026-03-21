@@ -87,6 +87,7 @@ class Settings(BaseSettings):
 
     app_name: str = "SEGYR-BOT"
     version: str = "0.1.0"
+    test_mode: bool = Field(default=False, alias="SEGYR_TEST_MODE")
     debug: bool = Field(default=False, alias="SEGYR_DEBUG")
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = Field(
         default="INFO", alias="SEGYR_LOG_LEVEL"
@@ -134,6 +135,9 @@ class Settings(BaseSettings):
                 return
             if str(secret).startswith("CHANGE_ME"):
                 raise ValueError(f"Configuration invalide (placeholder) pour {name}")
+
+        if self.test_mode:
+            return
 
         _ensure(self.jwt_secret, "SEGYR_JWT_SECRET")
         _ensure(self.db.password, "SEGYR_DB_PASSWORD")

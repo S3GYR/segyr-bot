@@ -22,8 +22,10 @@ jobs:
 
     env:
       PYTHONUNBUFFERED: "1"
+      SEGYR_TEST_MODE: "true"
       SEGYR_JWT_SECRET: "ci-jwt-secret"
       SEGYR_DB_PASSWORD: "ci-db-password"
+      SEGYR_API_AUTH_TOKEN: "ci-api-auth-token-1234"
       SEGYR_REDIS_ENABLED: "true"
       SEGYR_REDIS_URL: "redis://127.0.0.1:6379/0"
       SEGYR_LLM_MODEL: "ollama/mock"
