@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, List, Tuple
 
 import httpx
@@ -21,6 +22,9 @@ class LLMClient:
         self._cache: Dict[Tuple[str, str], Tuple[float, str]] = {}
 
     async def chat(self, messages: List[Dict[str, Any]]) -> str:
+        if settings.test_mode or os.getenv("SEGYR_TEST_MODE", "").lower() == "true":
+            return "mocked response"
+
         cache_key = (self.model, repr(messages))
         cached = self._cache_get(cache_key)
         if cached is not None:

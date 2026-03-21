@@ -28,6 +28,16 @@ class Intent:
     confidence: float
     entities: dict[str, Any]
 
+_FINANCE_PRIORITY_KEYWORDS = {
+    "facture",
+    "devis",
+    "paiement",
+    "acompte",
+    "solde",
+    "règlement",
+    "impayé",
+}
+
 
 # Règles de détection par mots-clés (rapide, avant appel LLM)
 _DOMAIN_KEYWORDS: dict[BusinessDomain, list[str]] = {
@@ -84,6 +94,10 @@ def detect_intent(message: str) -> Intent:
         score = sum(1 for kw in keywords if kw in message_lower)
         if score > 0:
             domain_scores[domain] = score
+
+    if BusinessDomain.FINANCE in domain_scores and BusinessDomain.CHANTIER in domain_scores:
+        if any(keyword in message_lower for keyword in _FINANCE_PRIORITY_KEYWORDS):
+            domain_scores[BusinessDomain.FINANCE] += 1
 
     if domain_scores:
         best_domain = max(domain_scores, key=lambda d: domain_scores[d])

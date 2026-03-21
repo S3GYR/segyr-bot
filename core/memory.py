@@ -208,10 +208,10 @@ class MemoryStore:
     def get_unpaid_client_invoices(self, entreprise_id: str | None = None) -> List[Dict[str, Any]]:
         if entreprise_id:
             return self.raw_query(
-                "SELECT * FROM factures WHERE entreprise_id = %s AND (statut IS NULL OR statut NOT IN ('payée','paye'))",
+                "SELECT * FROM factures WHERE entreprise_id = %s AND (statut IS NULL OR (statut NOT IN ('payée','paye') AND statut <> 'fournisseur_impayee'))",
                 (entreprise_id,),
             )
-        return self.raw_query("SELECT * FROM factures WHERE statut IS NULL OR statut NOT IN ('payée','paye')")
+        return self.raw_query("SELECT * FROM factures WHERE statut IS NULL OR (statut NOT IN ('payée','paye') AND statut <> 'fournisseur_impayee')")
 
     def get_unpaid_supplier_invoices(self, entreprise_id: str | None = None) -> List[Dict[str, Any]]:
         # Placeholder: suppliers not modelled; reuse factures with negative client_id marker or statut fournisseur

@@ -104,7 +104,11 @@ class FakeMemoryStore:
     # Unpaid helpers
     def get_unpaid_client_invoices(self, entreprise_id: str | None = None) -> list[dict]:
         factures = self.list_factures(entreprise_id=entreprise_id)
-        return [f for f in factures if f.get("statut") not in {"payée", "paye"}]
+        return [
+            f
+            for f in factures
+            if f.get("statut") not in {"payée", "paye", "fournisseur_impayee"}
+        ]
 
     def get_unpaid_supplier_invoices(self, entreprise_id: str | None = None) -> list[dict]:
         factures = self.list_factures(entreprise_id=entreprise_id)
