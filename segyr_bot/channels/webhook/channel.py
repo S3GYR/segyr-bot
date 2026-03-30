@@ -48,16 +48,55 @@ class WebhookChannel(BaseChannel):
     def _register_routes(self) -> None:
         route = self.config.route
 
+        def _extract_message(payload: dict[str, Any]) -> tuple[str, str, str, list[str]] | None:
+            sender = str(payload.get("sender") or payload.get("sender_id") or "").strip()
+            chat_id = str(payload.get("chat_id") or payload.get("conversation_id") or sender).strip()
+            text = str(payload.get("text") or payload.get("message") or "").strip()
+            media = payload.get("media") or []
+
+            if text and chat_id:
+                return sender or chat_id, chat_id, text, media if isinstance(media, list) else []
+
+            data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+            message_block = data.get("message") if isinstance(data, dict) and isinstance(data.get("message"), dict) else {}
+            key_block = message_block.get("key") if isinstance(message_block.get("key"), dict) else {}
+            message_data = message_block.get("message") if isinstance(message_block.get("message"), dict) else {}
+            extended = message_data.get("extendedTextMessage") if isinstance(message_data.get("extendedTextMessage"), dict) else {}
+
+            evo_text = str(
+                message_data.get("conversation")
+                or extended.get("text")
+                or (data.get("text") if isinstance(data, dict) else None)
+                or payload.get("message")
+                or ""
+            ).strip()
+            evo_chat_id = str(
+                key_block.get("remoteJid")
+                or (data.get("chat_id") if isinstance(data, dict) else None)
+                or payload.get("chat_id")
+                or ""
+            ).strip()
+            evo_sender = str(
+                key_block.get("participant")
+                or key_block.get("remoteJid")
+                or payload.get("sender")
+                or evo_chat_id
+            ).strip()
+
+            if evo_text and evo_chat_id:
+                return evo_sender or evo_chat_id, evo_chat_id, evo_text, []
+            return None
+
         @self._app.get("/health")
         async def _health() -> dict[str, str]:
             return {"status": "ok", "channel": self.name}
 
         @self._app.post(route)
         async def _receive(payload: dict[str, Any]) -> dict[str, Any]:
-            sender = str(payload.get("sender") or payload.get("sender_id") or "anonymous")
-            chat_id = str(payload.get("chat_id") or payload.get("conversation_id") or sender)
-            text = str(payload.get("text") or payload.get("message") or "")
-            media = payload.get("media") or []
+            parsed = _extract_message(payload)
+            if not parsed:
+                return {"ok": True, "ignored": True}
+            sender, chat_id, text, media = parsed
 
             request_id = str(uuid.uuid4())
             fut: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()

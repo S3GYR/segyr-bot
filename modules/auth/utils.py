@@ -1,63 +1,44 @@
 from __future__ import annotations
 
-import hashlib
 import time
 from typing import Any, Dict, Optional
 
 import jwt
 from fastapi import HTTPException, status
-from loguru import logger
 
 try:
     import bcrypt
 except ImportError:  # pragma: no cover - depends on runtime environment
     bcrypt = None  # type: ignore[assignment]
 
+if bcrypt is None:  # pragma: no cover - fail fast in broken runtime
+    raise RuntimeError("bcrypt est obligatoire et indisponible dans cet environnement")
+
 from config.settings import settings
 from core.memory import MemoryStore
 
-_FALLBACK_WARNED = False
-
-
-def _warn_sha256_fallback() -> None:
-    global _FALLBACK_WARNED
-    if _FALLBACK_WARNED:
-        return
-    logger.warning(
-        "bcrypt indisponible: fallback SHA256 activé (DEV uniquement, moins sûr que bcrypt)."
-    )
-    _FALLBACK_WARNED = True
-
-
-def _sha256_hash(password: str) -> str:
-    digest = hashlib.sha256(password.encode("utf-8")).hexdigest()
-    return f"sha256${digest}"
+def _require_bcrypt() -> Any:
+    if bcrypt is None:
+        raise RuntimeError("bcrypt est obligatoire et indisponible dans cet environnement")
+    return bcrypt
 
 
 def hash_password(password: str) -> str:
-    if bcrypt is not None:
-        return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-    _warn_sha256_fallback()
-    return _sha256_hash(password)
+    bcrypt_lib = _require_bcrypt()
+    return bcrypt_lib.hashpw(password.encode("utf-8"), bcrypt_lib.gensalt()).decode("utf-8")
 
 
 def verify_password(password: str, password_hash: str) -> bool:
+    bcrypt_lib = _require_bcrypt()
     raw_hash = (password_hash or "").strip()
     if not raw_hash:
         return False
 
-    if raw_hash.startswith("sha256$"):
-        return _sha256_hash(password) == raw_hash
-
-    # Backward-compat for early/plain sha256 storage without prefix.
-    if len(raw_hash) == 64 and all(c in "0123456789abcdef" for c in raw_hash.lower()):
-        return hashlib.sha256(password.encode("utf-8")).hexdigest() == raw_hash.lower()
+    if not raw_hash.startswith("$2"):
+        return False
 
     try:
-        if bcrypt is None:
-            _warn_sha256_fallback()
-            return False
-        return bcrypt.checkpw(password.encode("utf-8"), raw_hash.encode("utf-8"))
+        return bcrypt_lib.checkpw(password.encode("utf-8"), raw_hash.encode("utf-8"))
     except Exception:
         return False
 

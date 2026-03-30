@@ -73,6 +73,7 @@ async def run_gateway(channels_config_path: Path | None = None) -> None:
     bus = MessageBus()
     provider = get_provider(
         model=settings.llm.model,
+        provider=settings.llm.provider,
         api_key=settings.llm.api_key or None,
         api_base=settings.llm.api_base or None,
     )
@@ -85,7 +86,7 @@ async def run_gateway(channels_config_path: Path | None = None) -> None:
         bus=bus,
         provider=provider,
         workspace=settings.workspace,
-        model=settings.llm.model,
+        model=provider.get_default_model(),
         max_iterations=settings.agent.max_iterations,
         context_window_tokens=settings.llm.context_window_tokens,
         exec_timeout=settings.agent.exec_timeout,

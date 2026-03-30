@@ -9,7 +9,7 @@ from agents.action_engine import ActionEngine
 from agents.decision_engine import DecisionEngine
 from agents.orchestrator import Orchestrator
 from config.settings import settings
-from core.llm import LLMClient
+from core.llm import LLMClient, LLMClientError
 from core.memory import MemoryStore
 from core.tools import ToolRegistry
 from core.system_prompt import SYSTEM_PROMPT
@@ -100,8 +100,19 @@ class AgentEngine:
                 logger.debug("History load failed: %s", exc)
 
             messages = [{"role": "system", "content": SYSTEM_PROMPT}, *history_msgs, {"role": "user", "content": message}]
-            content = await self.llm.chat(messages)
-            result = {"reply": content, "decision": decision.as_dict()}
+            try:
+                content = await self.llm.chat(messages)
+                result = {"reply": content, "decision": decision.as_dict()}
+            except LLMClientError as exc:
+                llm_error = dict(exc.payload)
+                logger.warning("LLM degraded response: %s", llm_error.get("error"))
+                result = {
+                    "error": llm_error.get("error", "Erreur LLM"),
+                    "fallback_used": bool(llm_error.get("fallback_used", False)),
+                    "provider": llm_error.get("provider", settings.llm_provider),
+                    "model": llm_error.get("model", settings.llm_model),
+                    "fallback_model": llm_error.get("fallback_model", settings.llm.fallback_model),
+                }
 
         # Calcul cashflow pour enrichir la réponse et les actions
         cashflow_data = compute_cashflow(

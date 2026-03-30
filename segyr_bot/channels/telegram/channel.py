@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from config.settings import settings
 from core.bus.events import OutboundMessage
 from core.bus.queue import MessageBus
 from segyr_bot.channels.logging import logger
@@ -35,7 +36,8 @@ class TelegramChannel(BaseChannel):
         self._chat_ids: dict[str, int] = {}
 
     async def start(self) -> None:
-        if not self.config.token:
+        token = (self.config.token or settings.telegram_bot_token or "").strip()
+        if not token:
             logger.error("Telegram token manquant")
             return
 
@@ -46,7 +48,7 @@ class TelegramChannel(BaseChannel):
             return
 
         self._running = True
-        self._app = Application.builder().token(self.config.token).build()
+        self._app = Application.builder().token(token).build()
 
         async def _on_start(update, context: ContextTypes.DEFAULT_TYPE) -> None:
             _ = context

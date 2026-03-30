@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import importlib
 import sys
 import types
@@ -63,30 +62,21 @@ def test_verify_password_bcrypt_mode(auth_utils, candidate: str, expected: bool)
     assert auth_utils.verify_password(candidate, hashed) is expected
 
 
-def test_fallback_sha256_mode_when_bcrypt_missing(
-    auth_utils,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_hash_password_raises_when_bcrypt_missing(auth_utils, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(auth_utils, "bcrypt", None)
 
-    hashed = auth_utils.hash_password("fallback-password")
-
-    assert hashed.startswith("sha256$")
-    assert auth_utils.verify_password("fallback-password", hashed) is True
-    assert auth_utils.verify_password("bad", hashed) is False
+    with pytest.raises(RuntimeError, match="bcrypt est obligatoire"):
+        auth_utils.hash_password("fallback-password")
 
 
-def test_verify_password_accepts_legacy_plain_sha256(auth_utils) -> None:
-    password = "legacy-password"
-    legacy_hash = hashlib.sha256(password.encode("utf-8")).hexdigest()
-
-    assert auth_utils.verify_password(password, legacy_hash) is True
-    assert auth_utils.verify_password("incorrect", legacy_hash) is False
+def test_verify_password_rejects_legacy_sha256_hashes(auth_utils) -> None:
+    assert auth_utils.verify_password("legacy-password", "sha256$abc") is False
+    assert auth_utils.verify_password("legacy-password", "a" * 64) is False
 
 
 @pytest.mark.parametrize(
     "invalid_hash",
-    ["", "   ", "not-a-hash", "sha256$", "sha256$xyz", "$2b$invalid"],
+    ["", "   ", "not-a-hash", "sha256$", "sha256$xyz", "$2b$invalid", "a" * 64],
 )
 def test_verify_password_returns_false_on_invalid_hashes(auth_utils, invalid_hash: str) -> None:
     assert auth_utils.verify_password("any-password", invalid_hash) is False

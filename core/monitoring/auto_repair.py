@@ -4,7 +4,6 @@ import argparse
 import asyncio
 import json
 import os
-import subprocess
 import time
 import uuid
 from dataclasses import dataclass
@@ -13,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from core.logging import logger
+from core.monitoring.action_executor import ActionExecutor
 from core.monitoring.policy_engine import decide_actions, evaluate_policy, should_repair
 
 MAX_ATTEMPTS_PER_ACTION = 2
@@ -21,6 +21,7 @@ DEFAULT_BASE_URL = "http://127.0.0.1:8090"
 DEFAULT_HISTORY_PATH = Path("logs/auto_repair_history.jsonl")
 DEFAULT_POLICY_HISTORY_LIMIT = 200
 VALID_CORRELATION_SOURCES = {"ci", "manual", "alerting"}
+VALID_EXECUTION_MODES = {"run", "dry-run", "approval_required"}
 
 CRITICAL_ISSUES = {"redis_down", "gateway_down", "queue_down"}
 DESTRUCTIVE_ACTIONS = {"purge_cache"}
@@ -34,36 +35,14 @@ ISSUE_TO_ACTION = {
     "low_score": "restart_gateway",
 }
 
-ACTION_COMMANDS: dict[str, list[str]] = {
-    "restart_redis": [
-        "docker restart segyr-redis",
-        "docker restart redis",
-        "docker compose restart redis",
-        "systemctl restart redis",
-        "sc.exe stop redis && sc.exe start redis",
-    ],
-    "restart_gateway": [
-        "docker restart segyr-api",
-        "docker restart api",
-        "docker compose restart api",
-        "systemctl restart segyr-api",
-        "systemctl restart segyr-api.service",
-    ],
-    "restart_queue_worker": [
-        "docker restart segyr-worker",
-        "docker restart worker",
-        "docker compose restart worker",
-        "systemctl restart segyr-worker",
-        "systemctl restart segyr-worker.service",
-    ],
-}
-
 ACTION_LABELS = {
     "restart_redis": "Restart Redis service/container",
     "restart_gateway": "Restart gateway service/container",
     "restart_queue_worker": "Restart queue worker service/container",
     "purge_cache": "Purge Redis cache keys",
 }
+
+ACTION_EXECUTOR = ActionExecutor()
 
 
 @dataclass(slots=True)
@@ -91,6 +70,37 @@ def _normalize_source(source: str | None) -> str:
     if raw in VALID_CORRELATION_SOURCES:
         return raw
     return "manual"
+
+
+def _normalize_execution_mode(mode: str | None) -> str:
+    raw = str(mode or "run").strip().lower()
+    if raw in VALID_EXECUTION_MODES:
+        return raw
+    return "run"
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _resolve_auto_repair_controls() -> tuple[bool, str]:
+    raw_enabled = os.getenv("AUTO_REPAIR_ENABLED")
+    raw_mode = os.getenv("AUTO_REPAIR_MODE")
+    if raw_enabled is not None or raw_mode is not None:
+        enabled_default = _env_bool("SEGYR_AUTO_REPAIR_ENABLED", True)
+        enabled = _env_bool("AUTO_REPAIR_ENABLED", enabled_default)
+        mode = str(raw_mode or os.getenv("SEGYR_AUTO_REPAIR_MODE", "run"))
+        return enabled, mode
+
+    try:
+        from config.settings import settings as app_settings
+
+        return bool(app_settings.auto_repair_enabled), str(app_settings.auto_repair_mode)
+    except Exception:
+        return _env_bool("SEGYR_AUTO_REPAIR_ENABLED", True), str(os.getenv("SEGYR_AUTO_REPAIR_MODE", "run"))
 
 
 def _to_float(value: Any) -> float | None:
@@ -300,58 +310,6 @@ def decide_action(issues: list[dict[str, Any]]) -> list[str]:
     return actions
 
 
-def _run_shell(command: str, timeout_s: int) -> dict[str, Any]:
-    t0 = time.perf_counter()
-    try:
-        proc = subprocess.run(
-            command,
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-            check=False,
-        )
-        dt = round(time.perf_counter() - t0, 3)
-        return {
-            "ok": proc.returncode == 0,
-            "returncode": proc.returncode,
-            "command": command,
-            "duration_s": dt,
-            "stdout": (proc.stdout or "").strip()[:2000],
-            "stderr": (proc.stderr or "").strip()[:2000],
-        }
-    except Exception as exc:
-        return {
-            "ok": False,
-            "returncode": None,
-            "command": command,
-            "duration_s": round(time.perf_counter() - t0, 3),
-            "stdout": "",
-            "stderr": str(exc),
-        }
-
-
-def _execute_shell_action(action: str, timeout_s: int) -> dict[str, Any]:
-    commands = ACTION_COMMANDS.get(action, [])
-    attempts: list[dict[str, Any]] = []
-    for command in commands:
-        result = _run_shell(command=command, timeout_s=timeout_s)
-        attempts.append(result)
-        if result.get("ok"):
-            return {
-                "action": action,
-                "ok": True,
-                "status": "completed",
-                "attempts": attempts,
-            }
-    return {
-        "action": action,
-        "ok": False,
-        "status": "failed",
-        "attempts": attempts,
-    }
-
-
 def _purge_cache_keys() -> dict[str, Any]:
     from core.redis.client import get_redis
 
@@ -383,15 +341,15 @@ def _purge_cache_keys() -> dict[str, Any]:
 
 
 def restart_redis(*, timeout_s: int = 20) -> dict[str, Any]:
-    return _execute_shell_action("restart_redis", timeout_s=timeout_s)
+    return ACTION_EXECUTOR.execute("restart_redis", timeout_s=timeout_s)
 
 
 def restart_gateway(*, timeout_s: int = 20) -> dict[str, Any]:
-    return _execute_shell_action("restart_gateway", timeout_s=timeout_s)
+    return ACTION_EXECUTOR.execute("restart_gateway", timeout_s=timeout_s)
 
 
 def restart_queue_worker(*, timeout_s: int = 20) -> dict[str, Any]:
-    return _execute_shell_action("restart_queue_worker", timeout_s=timeout_s)
+    return ACTION_EXECUTOR.execute("restart_queue_worker", timeout_s=timeout_s)
 
 
 def purge_cache() -> dict[str, Any]:
@@ -406,8 +364,34 @@ def execute_action(
     dry_run: bool = False,
     safe_mode: bool = False,
     timeout_s: int = 20,
+    auto_repair_enabled: bool = True,
+    execution_mode: str = "run",
 ) -> dict[str, Any]:
     logger.warning("[ACTION] {} - {}", action, ACTION_LABELS.get(action, "custom action"))
+
+    mode = _normalize_execution_mode(execution_mode)
+
+    if not auto_repair_enabled:
+        return {
+            "action": action,
+            "ok": True,
+            "status": "skipped_disabled",
+            "attempts": [],
+            "dry_run": dry_run,
+            "safe_mode": safe_mode,
+            "execution_mode": mode,
+        }
+
+    if mode == "approval_required":
+        return {
+            "action": action,
+            "ok": True,
+            "status": "approval_required",
+            "attempts": [],
+            "dry_run": dry_run,
+            "safe_mode": safe_mode,
+            "execution_mode": mode,
+        }
 
     if safe_mode and action in DESTRUCTIVE_ACTIONS:
         return {
@@ -417,9 +401,10 @@ def execute_action(
             "attempts": [],
             "dry_run": dry_run,
             "safe_mode": safe_mode,
+            "execution_mode": mode,
         }
 
-    if dry_run:
+    if dry_run or mode == "dry-run":
         return {
             "action": action,
             "ok": True,
@@ -427,6 +412,7 @@ def execute_action(
             "attempts": [],
             "dry_run": True,
             "safe_mode": safe_mode,
+            "execution_mode": mode,
         }
 
     if action == "restart_redis":
@@ -560,10 +546,16 @@ def run_auto_repair_loop(
     planned_actions: list[str] | None = None,
     correlation_id: str | None = None,
     source: str = "manual",
+    auto_repair_enabled: bool | None = None,
+    execution_mode: str | None = None,
 ) -> dict[str, Any]:
     started_at = _now_iso()
     correlation_value = str(correlation_id or uuid.uuid4().hex)
     source_value = _normalize_source(source)
+    default_enabled, default_mode = _resolve_auto_repair_controls()
+    effective_mode = _normalize_execution_mode(execution_mode or default_mode)
+    effective_enabled = default_enabled if auto_repair_enabled is None else bool(auto_repair_enabled)
+    effective_dry_run = bool(dry_run or effective_mode == "dry-run")
     attempts_cap = max(1, min(int(max_attempts_per_action), MAX_ATTEMPTS_PER_ACTION))
     repair_log: list[dict[str, Any]] = []
     attempt_counts: dict[str, int] = {}
@@ -573,11 +565,13 @@ def run_auto_repair_loop(
     expected_score_delta = 0
 
     logger.info(
-        "auto_repair started correlation_id={} source={} dry_run={} safe_mode={}",
+        "auto_repair started correlation_id={} source={} dry_run={} safe_mode={} mode={} enabled={}",
         correlation_value,
         source_value,
-        dry_run,
+        effective_dry_run,
         safe_mode,
+        effective_mode,
+        effective_enabled,
     )
 
     try:
@@ -622,8 +616,10 @@ def run_auto_repair_loop(
                 "ended_at": _now_iso(),
                 "status": "skipped",
                 "reason": reason_value,
-                "dry_run": dry_run,
+                "dry_run": effective_dry_run,
                 "safe_mode": safe_mode,
+                "execution_mode": effective_mode,
+                "auto_repair_enabled": effective_enabled,
                 "max_attempts_per_action": attempts_cap,
                 "actions_planned": [],
                 "actions_executed": [],
@@ -649,14 +645,84 @@ def run_auto_repair_loop(
 
         expected_score_delta = _expected_score_delta(policy_report, score_before, min_score)
 
+        if not effective_enabled:
+            result = {
+                "started_at": started_at,
+                "ended_at": _now_iso(),
+                "status": "skipped",
+                "reason": "auto_repair_disabled",
+                "dry_run": effective_dry_run,
+                "safe_mode": safe_mode,
+                "execution_mode": effective_mode,
+                "auto_repair_enabled": False,
+                "max_attempts_per_action": attempts_cap,
+                "actions_planned": planned_actions_resolved,
+                "actions_executed": [],
+                "attempt_counts": {},
+                "issues_before": initial_issues,
+                "issues_after": initial_issues,
+                "score_before": score_before,
+                "score_after": int(current_health.get("score", 0) or 0),
+                "score_delta_expected": 0,
+                "score_delta_actual": 0,
+                "status_before": initial_health.get("status"),
+                "status_after": current_health.get("status"),
+                "repaired": False,
+                "health": current_health,
+                "policy_report": policy_report,
+                "policy": policy_report,
+                "correlation_id": correlation_value,
+                "source": source_value,
+            }
+            if store_history:
+                _safe_append_history(result, history_file)
+            return result
+
+        if effective_mode == "approval_required":
+            result = {
+                "started_at": started_at,
+                "ended_at": _now_iso(),
+                "status": "skipped",
+                "reason": "approval_required",
+                "dry_run": False,
+                "safe_mode": safe_mode,
+                "execution_mode": effective_mode,
+                "auto_repair_enabled": True,
+                "approval_required": True,
+                "actions_pending": planned_actions_resolved,
+                "max_attempts_per_action": attempts_cap,
+                "actions_planned": planned_actions_resolved,
+                "actions_executed": [],
+                "attempt_counts": {},
+                "issues_before": initial_issues,
+                "issues_after": initial_issues,
+                "score_before": score_before,
+                "score_after": int(current_health.get("score", 0) or 0),
+                "score_delta_expected": expected_score_delta,
+                "score_delta_actual": 0,
+                "status_before": initial_health.get("status"),
+                "status_after": current_health.get("status"),
+                "repaired": False,
+                "health": current_health,
+                "policy_report": policy_report,
+                "policy": policy_report,
+                "correlation_id": correlation_value,
+                "source": source_value,
+            }
+            if store_history:
+                _safe_append_history(result, history_file)
+            return result
+
         for action in planned_actions_resolved:
             for attempt in range(1, attempts_cap + 1):
                 attempt_counts[action] = attempt
                 action_result = execute_action(
                     action,
-                    dry_run=dry_run,
+                    dry_run=effective_dry_run,
                     safe_mode=safe_mode,
                     timeout_s=timeout_s,
+                    auto_repair_enabled=effective_enabled,
+                    execution_mode=effective_mode,
                 )
                 action_result["attempt"] = attempt
                 repair_log.append(action_result)
@@ -691,8 +757,10 @@ def run_auto_repair_loop(
             "started_at": started_at,
             "ended_at": _now_iso(),
             "status": "completed",
-            "dry_run": dry_run,
+            "dry_run": effective_dry_run,
             "safe_mode": safe_mode,
+            "execution_mode": effective_mode,
+            "auto_repair_enabled": effective_enabled,
             "max_attempts_per_action": attempts_cap,
             "actions_planned": planned_actions_resolved,
             "actions_executed": repair_log,
@@ -724,8 +792,10 @@ def run_auto_repair_loop(
             "ended_at": _now_iso(),
             "status": "failed",
             "reason": "auto_repair_exception",
-            "dry_run": dry_run,
+            "dry_run": effective_dry_run,
             "safe_mode": safe_mode,
+            "execution_mode": effective_mode,
+            "auto_repair_enabled": effective_enabled,
             "max_attempts_per_action": attempts_cap,
             "actions_planned": [],
             "actions_executed": repair_log,
@@ -766,6 +836,8 @@ def main() -> int:
     parser.add_argument("--no-history", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--safe-mode", action="store_true")
+    parser.add_argument("--mode", default=None, choices=sorted(VALID_EXECUTION_MODES))
+    parser.add_argument("--disabled", action="store_true", help="Disable all auto-repair actions")
     parser.add_argument("--correlation-id", default=None)
     parser.add_argument("--source", default="manual", choices=sorted(VALID_CORRELATION_SOURCES))
     parser.add_argument("--json", action="store_true", help="print compact JSON")
@@ -774,6 +846,8 @@ def main() -> int:
     result = run_auto_repair_loop(
         dry_run=bool(args.dry_run),
         safe_mode=bool(args.safe_mode),
+        execution_mode=(str(args.mode) if args.mode else None),
+        auto_repair_enabled=(False if bool(args.disabled) else None),
         max_attempts_per_action=int(args.max_attempts_per_action),
         min_score=int(args.min_score),
         base_url=str(args.base_url),
@@ -790,7 +864,12 @@ def main() -> int:
     else:
         print(json.dumps(result, ensure_ascii=False, indent=2))
 
-    return 0 if bool(result.get("repaired")) else 1
+    status_value = str(result.get("status") or "").strip().lower()
+    if status_value == "failed":
+        return 1
+    if status_value == "completed" and not bool(result.get("repaired")):
+        return 1
+    return 0
 
 
 if __name__ == "__main__":

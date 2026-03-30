@@ -9,6 +9,7 @@ email-validator==2.2.0
 httpx==0.28.1
 litellm==1.52.3
 loguru==0.7.2
+python-telegram-bot==21.6
 PyJWT==2.9.0
 psycopg[binary]==3.2.3
 python-dotenv==1.0.1

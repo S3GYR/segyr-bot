@@ -8,12 +8,12 @@
       "enabled": true,
       "host": "0.0.0.0",
       "port": 8090,
-      "route": "/message",
+      "route": "/webhook",
       "responseTimeoutS": 20,
       "allowFrom": ["segyr_test", "*"]
     },
     "telegram": {
-      "enabled": false,
+      "enabled": true,
       "token": "",
       "allowFrom": ["*"],
       "pollIntervalS": 1.0

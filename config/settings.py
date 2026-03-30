@@ -14,12 +14,16 @@ class LLMSettings(BaseSettings):
     """Configuration du fournisseur LLM."""
     model_config = SettingsConfigDict(env_prefix="SEGYR_LLM_", extra="ignore")
 
-    provider: str = "ollama"
-    model: str = "ollama/llama3.2"
+    provider: str = "litellm"
+    model: str = "ollama/qwen3.5:9b"
+    fallback_model: str = "ollama/qwen3.5:4b"
+    mode: Literal["fast", "quality"] = "quality"
     api_key: str = ""
-    api_base: str = "http://localhost:11434"
-    max_tokens: int = 4096
-    temperature: float = 0.1
+    api_base: str = "http://ollama:11434"
+    timeout: float = 120.0
+    max_tokens: int = 700
+    temperature: float = 0.15
+    retry_attempts: int = 2
     context_window_tokens: int = 65_536
 
 
@@ -97,11 +101,37 @@ class Settings(BaseSettings):
     redis_url: str = Field(default="redis://localhost:6379/0", alias="SEGYR_REDIS_URL")
     redis_enabled: bool = Field(default=True, alias="SEGYR_REDIS_ENABLED")
     cache_ttl: int = Field(default=300, alias="SEGYR_CACHE_TTL")
+    global_rate_limit_enabled: bool = Field(default=True, alias="SEGYR_GLOBAL_RATE_LIMIT_ENABLED")
+    global_rate_limit_window_seconds: int = Field(default=60, alias="SEGYR_GLOBAL_RATE_LIMIT_WINDOW_SECONDS")
+    global_rate_limit_max_requests: int = Field(default=120, alias="SEGYR_GLOBAL_RATE_LIMIT_MAX_REQUESTS")
+    global_rate_limit_fail_closed: bool = Field(default=False, alias="SEGYR_GLOBAL_RATE_LIMIT_FAIL_CLOSED")
     api_auth_token: str | None = Field(default=None, alias="SEGYR_API_AUTH_TOKEN")
     api_token_header: str = Field(default="X-API-Token", alias="SEGYR_API_TOKEN_HEADER")
+    api_trusted_hosts_raw: str = Field(
+        default="localhost,127.0.0.1,api,segyr-api",
+        alias="SEGYR_API_TRUSTED_HOSTS",
+    )
+    http_hsts_max_age: int = Field(default=63_072_000, alias="SEGYR_HTTP_HSTS_MAX_AGE")
+    http_content_security_policy: str = Field(
+        default=(
+            "default-src 'self'; "
+            "img-src 'self' data:; "
+            "style-src 'self' 'unsafe-inline'; "
+            "script-src 'self'; "
+            "connect-src 'self'; "
+            "frame-ancestors 'none';"
+        ),
+        alias="SEGYR_HTTP_CSP",
+    )
+    http_referrer_policy: str = Field(default="strict-origin-when-cross-origin", alias="SEGYR_HTTP_REFERRER_POLICY")
     jwt_secret: str = Field(default="CHANGE_ME_JWT_SECRET", alias="SEGYR_JWT_SECRET")
     jwt_algorithm: str = Field(default="HS256", alias="SEGYR_JWT_ALGO")
     jwt_exp_minutes: int = Field(default=60, alias="SEGYR_JWT_EXP_MIN")
+    auto_repair_enabled: bool = Field(default=True, alias="SEGYR_AUTO_REPAIR_ENABLED")
+    auto_repair_mode: Literal["run", "dry-run", "approval_required"] = Field(
+        default="run",
+        alias="SEGYR_AUTO_REPAIR_MODE",
+    )
     smtp_host: str | None = Field(default=None, alias="SEGYR_SMTP_HOST")
     smtp_port: int | None = Field(default=None, alias="SEGYR_SMTP_PORT")
     smtp_user: str | None = Field(default=None, alias="SEGYR_SMTP_USER")
@@ -109,6 +139,10 @@ class Settings(BaseSettings):
     smtp_from: str | None = Field(default=None, alias="SEGYR_SMTP_FROM")
     telegram_bot_token: str | None = Field(default=None, alias="SEGYR_TELEGRAM_BOT_TOKEN")
     telegram_chat_id: str | None = Field(default=None, alias="SEGYR_TELEGRAM_CHAT_ID")
+    evolution_api_base: str | None = Field(default=None, alias="SEGYR_EVOLUTION_API_BASE")
+    evolution_api_key: str | None = Field(default=None, alias="SEGYR_EVOLUTION_API_KEY")
+    evolution_instance: str | None = Field(default=None, alias="SEGYR_EVOLUTION_INSTANCE")
+    evolution_webhook_secret: str | None = Field(default=None, alias="SEGYR_EVOLUTION_WEBHOOK_SECRET")
 
     @property
     def workspace(self) -> Path:
@@ -126,6 +160,17 @@ class Settings(BaseSettings):
     def REDIS_URL(self) -> str:
         """Compat alias for modules expecting uppercase setting names."""
         return self.redis_url
+
+    @property
+    def api_trusted_hosts(self) -> list[str]:
+        raw = str(self.api_trusted_hosts_raw or "").strip()
+        if not raw:
+            hosts = ["localhost", "127.0.0.1"]
+        else:
+            hosts = [host.strip() for host in raw.split(",") if host.strip()]
+        if self.test_mode and "testserver" not in hosts:
+            hosts.append("testserver")
+        return hosts
 
     def model_post_init(self, __context: dict | None) -> None:
         def _ensure(secret: str | None, name: str, mandatory: bool = True) -> None:
@@ -146,6 +191,8 @@ class Settings(BaseSettings):
         # SMTP et Telegram optionnels: valider uniquement si fournis
         _ensure(self.smtp_password, "SEGYR_SMTP_PASSWORD", mandatory=False)
         _ensure(self.telegram_bot_token, "SEGYR_TELEGRAM_BOT_TOKEN", mandatory=False)
+        _ensure(self.evolution_api_key, "SEGYR_EVOLUTION_API_KEY", mandatory=False)
+        _ensure(self.evolution_webhook_secret, "SEGYR_EVOLUTION_WEBHOOK_SECRET", mandatory=False)
 
     # Compatibilité legacy
     @property
@@ -170,8 +217,7 @@ class Settings(BaseSettings):
 
     @property
     def llm_timeout(self) -> float:
-        # Valeur par défaut conservée pour compat
-        return 25.0
+        return self.llm.timeout
 
     @property
     def llm_cache_ttl_seconds(self) -> int:

@@ -230,10 +230,13 @@ class AgentLoop:
             iteration += 1
             tool_defs = self.tools.get_definitions()
 
-            response = await self.provider.chat_with_retry(
+            response = await self.provider.chat(
                 messages=messages,
                 tools=tool_defs,
                 model=self.model,
+                max_tokens=self.provider.generation.max_tokens,
+                temperature=self.provider.generation.temperature,
+                reasoning_effort=self.provider.generation.reasoning_effort,
             )
 
             if response.has_tool_calls:

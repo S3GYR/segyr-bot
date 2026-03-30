@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
-import time
 import uuid
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
@@ -20,7 +19,6 @@ from modules.auth.utils import decode_token, get_bearer_token
 
 REPAIR_WAIT_TIMEOUT_S = 30.0
 RECENT_RESULTS_LIMIT = 20
-REPAIR_RATE_LIMIT_SECONDS = 30.0
 AUDIT_LOG_PATH = Path("logs/repair_audit.jsonl")
 AUDIT_LOG_MAX_BYTES = 5 * 1024 * 1024
 
@@ -39,7 +37,6 @@ _CURRENT_SOURCE: str | None = None
 _LAST_RESULT: dict[str, Any] | None = None
 _LAST_ERROR: str | None = None
 _RECENT_RESULTS: deque[dict[str, Any]] = deque(maxlen=RECENT_RESULTS_LIMIT)
-_RATE_LIMIT_BY_IP: dict[str, float] = {}
 _AUDIT_LOCK = threading.RLock()
 
 
@@ -68,21 +65,6 @@ def _base_payload(state: str) -> dict[str, Any]:
         "score_after": None,
         "actions": [],
     }
-
-
-def _enforce_rate_limit(client_ip: str | None, window_seconds: float = REPAIR_RATE_LIMIT_SECONDS) -> None:
-    now = time.monotonic()
-    key = client_ip or "unknown"
-    with _STATE_LOCK:
-        last = _RATE_LIMIT_BY_IP.get(key)
-        if last is not None and (now - last) < window_seconds:
-            retry_after = max(0.0, window_seconds - (now - last))
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail=f"Rate limit: 1 appel / {int(window_seconds)}s par IP",
-                headers={"Retry-After": str(int(retry_after) + 1)},
-            )
-        _RATE_LIMIT_BY_IP[key] = now
 
 
 def _rotate_audit_log_if_needed(path: Path = AUDIT_LOG_PATH, max_bytes: int = AUDIT_LOG_MAX_BYTES) -> None:
@@ -474,7 +456,6 @@ async def require_repair_access(
     if x_api_token:
         if not settings.api_auth_token or x_api_token != settings.api_auth_token:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Token API invalide")
-        _enforce_rate_limit(client_ip)
         return {
             "auth": "api_token",
             "identity": "api_token",
@@ -489,7 +470,6 @@ async def require_repair_access(
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="JWT invalide") from exc
         raise
 
-    _enforce_rate_limit(client_ip)
     user_id = str(payload.get("user_id") or "unknown")
     return {
         "auth": "jwt",
