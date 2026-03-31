@@ -284,13 +284,24 @@ class GatewayRuntime:
 runtime = GatewayRuntime()
 app = FastAPI(title="SEGYR Gateway", version="1.0.0")
 _startup_task: asyncio.Task | None = None
+runtime_failed = False
 
 
 @app.on_event("startup")
 async def _on_startup() -> None:
-    global _startup_task
+    global _startup_task, runtime_failed
     print("⚡ FastAPI startup event triggered")
-    _startup_task = asyncio.create_task(runtime.start())
+
+    async def _safe_start() -> None:
+        global runtime_failed
+        try:
+            await runtime.start()
+        except Exception as e:
+            runtime_failed = True
+            logger.error("Startup error: {}", e)
+
+    runtime_failed = False
+    _startup_task = asyncio.create_task(_safe_start())
 
 
 @app.on_event("shutdown")
@@ -304,8 +315,13 @@ async def _on_shutdown() -> None:
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+async def health() -> dict[str, str]:
+    gateway_state = "ready" if runtime.started and not runtime_failed else "degraded"
+    print(f"💓 Health check: gateway={gateway_state}")
+    return {
+        "status": "ok",
+        "gateway": gateway_state,
+    }
 
 
 @app.post("/message")
@@ -330,18 +346,14 @@ def main() -> None:
     args = parser.parse_args()
 
     runtime.channels_config_path = Path(args.channels_config).expanduser().resolve() if args.channels_config else None
-    try:
-        if asyncio.get_event_loop().is_running():
-            print("⚠️ Event loop déjà actif")
-    except RuntimeError:
-        pass
-    print("⏳ Gateway booting...")
-    time.sleep(1)
     print("🚀 Starting Gateway...")
-    print("🚀 Launching Uvicorn...")
-    uvicorn.run(app, host="0.0.0.0", port=8090, log_level="info", loop="asyncio")
-    while True:
-        time.sleep(60)
+    try:
+        print("🚀 Launching Uvicorn...")
+        uvicorn.run(app, host="0.0.0.0", port=8090, log_level="info")
+    except Exception as e:
+        print(f"FATAL: {e}")
+        while True:
+            time.sleep(60)
 
 
 if __name__ == "__main__":
