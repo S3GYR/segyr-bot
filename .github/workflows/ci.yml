@@ -144,6 +144,10 @@ jobs:
           }
           trap cleanup EXIT
 
+          docker compose ps || true
+          docker compose logs segyr-gateway --tail=100 || true
+          ss -tuln | grep 8090 || echo "PORT 8090 NOT OPEN"
+
           echo "Waiting for gateway..."
           for i in {1..30}; do
             if curl -s "http://localhost:8090/health" > /dev/null; then

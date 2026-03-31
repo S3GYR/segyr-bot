@@ -96,6 +96,7 @@ services:
         condition: service_healthy
       ollama:
         condition: service_healthy
+    command: ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2", "--proxy-headers"]
     ports:
       - "8200:8000"
     volumes:

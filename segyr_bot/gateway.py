@@ -11,6 +11,8 @@ from typing import Any
 import uvicorn
 from fastapi import FastAPI, Request
 
+print("🔥 GATEWAY MODULE LOADED")
+
 from core.agent.loop import AgentLoop
 from core.bus.events import InboundMessage, OutboundMessage
 from core.bus.queue import MessageBus
@@ -287,15 +289,8 @@ _startup_task: asyncio.Task | None = None
 @app.on_event("startup")
 async def _on_startup() -> None:
     global _startup_task
-
-    def _on_runtime_started(task: asyncio.Task) -> None:
-        if task.cancelled():
-            return
-        if task.exception() is None:
-            print("🚀 Gateway fully initialized")
-
+    print("⚡ FastAPI startup event triggered")
     _startup_task = asyncio.create_task(runtime.start())
-    _startup_task.add_done_callback(_on_runtime_started)
 
 
 @app.on_event("shutdown")
@@ -342,10 +337,13 @@ def main() -> None:
         pass
     print("⏳ Gateway booting...")
     time.sleep(1)
-    print("🚀 Starting Gateway container...")
-    print("🚀 Gateway started on port 8090")
+    print("🚀 Starting Gateway...")
+    print("🚀 Launching Uvicorn...")
     uvicorn.run(app, host="0.0.0.0", port=8090, log_level="info", loop="asyncio")
+    while True:
+        time.sleep(60)
 
 
 if __name__ == "__main__":
+    print("✅ __main__ triggered")
     main()
