@@ -10,7 +10,12 @@ import pytest
 
 def _import_auth_utils_fresh() -> object:
     module_name = "modules.auth.utils"
-    sys.modules.pop(module_name, None)
+
+    import sys
+    import importlib
+
+    if module_name in sys.modules:
+        del sys.modules[module_name]
     pkg = sys.modules.get("modules.auth")
     if pkg is not None and hasattr(pkg, "utils"):
         delattr(pkg, "utils")

@@ -1,17 +1,301 @@
 from __future__ import annotations
 
 import os
+import sys
+import types
 from datetime import date
 from typing import TYPE_CHECKING, Any, Dict, List
 from unittest.mock import AsyncMock
 
 import pytest
 
+
+def _install_test_stubs() -> None:
+    # --- fastapi stub ---
+    try:
+        import fastapi  # noqa: F401
+    except Exception:
+        fastapi_stub = types.ModuleType("fastapi")
+
+        class HTTPException(Exception):
+            def __init__(self, status_code: int | None = None, detail: str | None = None, headers: dict | None = None):
+                super().__init__(detail)
+                self.status_code = status_code
+                self.detail = detail
+                self.headers = headers or {}
+
+        class _DummyState:
+            pass
+
+        class FastAPI:
+            def __init__(self, *args, **kwargs):
+                self.state = _DummyState()
+                self.dependency_overrides = {}
+
+            def _route(self, *args, **kwargs):
+                def _decorator(func):
+                    return func
+
+                return _decorator
+
+            get = post = put = patch = delete = _route
+
+            def add_middleware(self, *args, **kwargs):
+                return None
+
+            def include_router(self, *args, **kwargs):
+                return None
+
+            def middleware(self, *args, **kwargs):
+                def _decorator(func):
+                    return func
+
+                return _decorator
+
+        class APIRouter:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def _decorator(self, *args, **kwargs):
+                def _wrap(func):
+                    return func
+
+                return _wrap
+
+            get = post = put = patch = delete = _decorator
+
+        class Request:
+            pass
+
+        def Depends(dep=None):
+            return dep
+
+        def Header(default=None, **kwargs):
+            return default
+
+        status = types.SimpleNamespace(
+            HTTP_400_BAD_REQUEST=400,
+            HTTP_401_UNAUTHORIZED=401,
+            HTTP_403_FORBIDDEN=403,
+            HTTP_404_NOT_FOUND=404,
+            HTTP_429_TOO_MANY_REQUESTS=429,
+        )
+
+        fastapi_stub.HTTPException = HTTPException
+        fastapi_stub.status = status
+        fastapi_stub.FastAPI = FastAPI
+        fastapi_stub.APIRouter = APIRouter
+        fastapi_stub.Request = Request
+        fastapi_stub.Depends = Depends
+        fastapi_stub.Header = Header
+
+        testclient_stub = types.ModuleType("fastapi.testclient")
+
+        class _FastAPITestClientStub:
+            __test__ = False
+
+            def __init__(self, *args, **kwargs):
+                self._reason = "fastapi non installé: tests API ignorés"
+
+            def __enter__(self):
+                pytest.skip(self._reason)
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        testclient_stub.TestClient = _FastAPITestClientStub
+
+        middleware_stub = types.ModuleType("fastapi.middleware")
+        gzip_stub = types.ModuleType("fastapi.middleware.gzip")
+
+        class GZipMiddleware:
+            def __init__(self, *args, **kwargs):
+                pass
+
+        gzip_stub.GZipMiddleware = GZipMiddleware
+
+        responses_stub = types.ModuleType("fastapi.responses")
+
+        class FileResponse:
+            def __init__(self, *args, **kwargs):
+                pass
+
+        class PlainTextResponse:
+            def __init__(self, content: str = "", status_code: int = 200, headers: dict | None = None):
+                self.content = content
+                self.status_code = status_code
+                self.headers = headers or {}
+
+        responses_stub.FileResponse = FileResponse
+        responses_stub.PlainTextResponse = PlainTextResponse
+
+        sys.modules.setdefault("fastapi", fastapi_stub)
+        sys.modules.setdefault("fastapi.testclient", testclient_stub)
+        sys.modules.setdefault("fastapi.middleware", middleware_stub)
+        sys.modules.setdefault("fastapi.middleware.gzip", gzip_stub)
+        sys.modules.setdefault("fastapi.responses", responses_stub)
+
+    # --- starlette stubs for fastapi-adjacent imports ---
+    try:
+        import starlette  # noqa: F401
+    except Exception:
+        starlette_stub = types.ModuleType("starlette")
+        middleware_stub = types.ModuleType("starlette.middleware")
+        trustedhost_stub = types.ModuleType("starlette.middleware.trustedhost")
+        base_stub = types.ModuleType("starlette.middleware.base")
+        requests_stub = types.ModuleType("starlette.requests")
+        responses_stub = types.ModuleType("starlette.responses")
+
+        class TrustedHostMiddleware:
+            def __init__(self, *args, **kwargs):
+                pass
+
+        class BaseHTTPMiddleware:
+            def __init__(self, *args, **kwargs):
+                pass
+
+        class Request:
+            pass
+
+        class Response:
+            def __init__(self, *args, **kwargs):
+                self.headers = {}
+                self.status_code = kwargs.get("status_code", 200)
+
+        class JSONResponse(Response):
+            def __init__(self, content=None, status_code=200, headers=None):
+                super().__init__(status_code=status_code)
+                self.content = content
+                self.headers = headers or {}
+
+        trustedhost_stub.TrustedHostMiddleware = TrustedHostMiddleware
+        base_stub.BaseHTTPMiddleware = BaseHTTPMiddleware
+        requests_stub.Request = Request
+        responses_stub.Response = Response
+        responses_stub.JSONResponse = JSONResponse
+
+        sys.modules.setdefault("starlette", starlette_stub)
+        sys.modules.setdefault("starlette.middleware", middleware_stub)
+        sys.modules.setdefault("starlette.middleware.trustedhost", trustedhost_stub)
+        sys.modules.setdefault("starlette.middleware.base", base_stub)
+        sys.modules.setdefault("starlette.requests", requests_stub)
+        sys.modules.setdefault("starlette.responses", responses_stub)
+
+    # --- loguru stub ---
+    try:
+        import loguru  # noqa: F401
+    except Exception:
+        loguru_stub = types.ModuleType("loguru")
+
+        class _Logger:
+            def bind(self, *args, **kwargs):
+                return self
+
+            def __getattr__(self, _name):
+                return lambda *a, **k: None
+
+        loguru_stub.logger = _Logger()
+        sys.modules.setdefault("loguru", loguru_stub)
+
+    # --- psycopg stub ---
+    try:
+        import psycopg  # noqa: F401
+    except Exception:
+        psycopg_stub = types.ModuleType("psycopg")
+        rows_stub = types.ModuleType("psycopg.rows")
+
+        def _connect(*args, **kwargs):
+            raise RuntimeError("psycopg indisponible en mode test")
+
+        rows_stub.dict_row = object()
+        psycopg_stub.connect = _connect
+        psycopg_stub.rows = rows_stub
+        sys.modules.setdefault("psycopg", psycopg_stub)
+        sys.modules.setdefault("psycopg.rows", rows_stub)
+
+    # --- redis stub ---
+    try:
+        import redis  # noqa: F401
+    except Exception:
+        redis_stub = types.ModuleType("redis")
+        redis_exceptions_stub = types.ModuleType("redis.exceptions")
+
+        class RedisError(Exception):
+            pass
+
+        class Redis:
+            @classmethod
+            def from_url(cls, *args, **kwargs):
+                return cls()
+
+            def ping(self):
+                return True
+
+            def incr(self, *args, **kwargs):
+                return 1
+
+            def expire(self, *args, **kwargs):
+                return True
+
+            def ttl(self, *args, **kwargs):
+                return 1
+
+        redis_stub.Redis = Redis
+        redis_stub.RedisError = RedisError
+        redis_exceptions_stub.RedisError = RedisError
+        sys.modules.setdefault("redis", redis_stub)
+        sys.modules.setdefault("redis.exceptions", redis_exceptions_stub)
+
+    # --- email-validator stub (used by pydantic EmailStr) ---
+    try:
+        import email_validator  # noqa: F401
+    except Exception:
+        email_validator_stub = types.ModuleType("email_validator")
+
+        class EmailNotValidError(ValueError):
+            pass
+
+        class _ValidatedEmail:
+            def __init__(self, email: str):
+                normalized = (email or "").strip()
+                self.normalized = normalized
+                self.local_part = normalized.split("@", 1)[0] if "@" in normalized else normalized
+
+        def validate_email(email: str, check_deliverability: bool = False):  # noqa: ARG001
+            candidate = (email or "").strip()
+            if "@" not in candidate or candidate.startswith("@") or candidate.endswith("@"):
+                raise EmailNotValidError("invalid email")
+            return _ValidatedEmail(candidate)
+
+        email_validator_stub.EmailNotValidError = EmailNotValidError
+        email_validator_stub.validate_email = validate_email
+        email_validator_stub.__version__ = "2.0.0"
+        sys.modules.setdefault("email_validator", email_validator_stub)
+
+        try:
+            import importlib.metadata as importlib_metadata
+
+            _orig_version = importlib_metadata.version
+
+            def _version(name: str):
+                if name == "email-validator":
+                    return "2.0.0"
+                return _orig_version(name)
+
+            importlib_metadata.version = _version
+        except Exception:
+            pass
+
+
+_install_test_stubs()
+
 # Ensure mandatory settings are available before app imports during test collection.
 os.environ.setdefault("SEGYR_TEST_MODE", "true")
 os.environ.setdefault("SEGYR_DB_PASSWORD", "test-db-password")
 os.environ.setdefault("SEGYR_JWT_SECRET", "test-jwt-secret-32-characters-min")
 os.environ.setdefault("SEGYR_API_AUTH_TOKEN", "test-api-auth-token")
+if not str(os.environ.get("SEGYR_SMTP_PORT", "")).strip():
+    os.environ["SEGYR_SMTP_PORT"] = "25"
 
 if TYPE_CHECKING:
     from core.agent import AgentEngine
