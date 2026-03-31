@@ -8,6 +8,15 @@ import builtins
 import pytest
 
 
+def _import_auth_utils_fresh() -> object:
+    module_name = "modules.auth.utils"
+    sys.modules.pop(module_name, None)
+    pkg = sys.modules.get("modules.auth")
+    if pkg is not None and hasattr(pkg, "utils"):
+        delattr(pkg, "utils")
+    return importlib.import_module(module_name)
+
+
 def _ensure_jwt_stub(monkeypatch: pytest.MonkeyPatch) -> None:
     try:
         import jwt  # noqa: F401
@@ -32,10 +41,7 @@ def auth_utils(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("SEGYR_JWT_SECRET", "test-jwt-secret")
     monkeypatch.setenv("SEGYR_DB_PASSWORD", "test-db-password")
     _ensure_jwt_stub(monkeypatch)
-
-    from modules.auth import utils as auth_utils_module
-
-    return importlib.reload(auth_utils_module)
+    return _import_auth_utils_fresh()
 
 
 def test_hash_password_uses_bcrypt_and_verify_roundtrip(auth_utils) -> None:
@@ -84,11 +90,7 @@ def test_hash_password_uses_test_mode_backend_when_bcrypt_import_fails(monkeypat
         return real_import(name, globals, locals, fromlist, level)
 
     monkeypatch.setattr(builtins, "__import__", _import)
-    sys.modules.pop("modules.auth.utils", None)
-
-    from modules.auth import utils as auth_utils_module
-
-    loaded = importlib.reload(auth_utils_module)
+    loaded = _import_auth_utils_fresh()
     hashed = loaded.hash_password("Test123!")
 
     assert hashed.startswith("$2")
