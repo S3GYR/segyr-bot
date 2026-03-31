@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import sys
 import types
+import builtins
 
 import pytest
 
@@ -67,6 +68,31 @@ def test_hash_password_raises_when_bcrypt_missing(auth_utils, monkeypatch: pytes
 
     with pytest.raises(RuntimeError, match="bcrypt est obligatoire"):
         auth_utils.hash_password("fallback-password")
+
+
+def test_hash_password_uses_test_mode_backend_when_bcrypt_import_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SEGYR_TEST_MODE", "true")
+    monkeypatch.setenv("SEGYR_JWT_SECRET", "test-jwt-secret")
+    monkeypatch.setenv("SEGYR_DB_PASSWORD", "test-db-password")
+    _ensure_jwt_stub(monkeypatch)
+
+    real_import = builtins.__import__
+
+    def _import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "bcrypt":
+            raise ImportError("bcrypt unavailable in test")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", _import)
+    sys.modules.pop("modules.auth.utils", None)
+
+    from modules.auth import utils as auth_utils_module
+
+    loaded = importlib.reload(auth_utils_module)
+    hashed = loaded.hash_password("Test123!")
+
+    assert hashed.startswith("$2")
+    assert loaded.verify_password("Test123!", hashed) is True
 
 
 def test_verify_password_rejects_legacy_sha256_hashes(auth_utils) -> None:

@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
+import os
 import time
 from typing import Any, Dict, Optional
 
@@ -11,7 +15,48 @@ try:
 except ImportError:  # pragma: no cover - depends on runtime environment
     bcrypt = None  # type: ignore[assignment]
 
-if bcrypt is None:  # pragma: no cover - fail fast in broken runtime
+
+def _is_test_mode() -> bool:
+    return str(os.getenv("SEGYR_TEST_MODE", "")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+class _TestModeBcryptFallback:
+    """Minimal password backend used only for CI/tests when bcrypt is unavailable."""
+
+    _prefix = "$2t$"
+
+    @staticmethod
+    def gensalt() -> bytes:
+        return os.urandom(16)
+
+    @classmethod
+    def hashpw(cls, password: bytes, salt: bytes) -> bytes:
+        digest = hashlib.pbkdf2_hmac("sha256", password, salt, 120_000)
+        salt_b64 = base64.urlsafe_b64encode(salt).decode("ascii").rstrip("=")
+        digest_b64 = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+        return f"{cls._prefix}{salt_b64}${digest_b64}".encode("utf-8")
+
+    @classmethod
+    def checkpw(cls, password: bytes, hashed: bytes) -> bool:
+        raw = hashed.decode("utf-8")
+        if not raw.startswith(cls._prefix):
+            return False
+        try:
+            encoded = raw[len(cls._prefix) :]
+            salt_raw, digest_raw = encoded.split("$", 1)
+            salt = base64.urlsafe_b64decode(f"{salt_raw}==")
+            expected = base64.urlsafe_b64decode(f"{digest_raw}==")
+        except Exception:
+            return False
+
+        probe = hashlib.pbkdf2_hmac("sha256", password, salt, 120_000)
+        return hmac.compare_digest(probe, expected)
+
+
+if bcrypt is None and _is_test_mode():  # pragma: no cover - depends on runtime env
+    bcrypt = _TestModeBcryptFallback()  # type: ignore[assignment]
+
+if bcrypt is None:  # pragma: no cover - fail fast in non-test runtime
     raise RuntimeError("bcrypt est obligatoire et indisponible dans cet environnement")
 
 from config.settings import settings

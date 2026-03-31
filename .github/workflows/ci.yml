@@ -30,6 +30,10 @@ jobs:
       SEGYR_REDIS_URL: "redis://127.0.0.1:6379/0"
       SEGYR_LLM_MODEL: "ollama/mock"
       SEGYR_LLM_API_BASE: "http://127.0.0.1:11434"
+      SEGYR_AUTO_REPAIR_ENABLED: "true"
+      SEGYR_AUTO_REPAIR_MODE: "run"
+      AUTO_REPAIR_ENABLED: "true"
+      AUTO_REPAIR_MODE: "run"
 
     steps:
       - name: Checkout
@@ -46,8 +50,18 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install -r requirements.txt
+          python -m pip check
+
+      - name: Validate critical imports
+        run: |
+          python - <<'PY'
+          import importlib
+          for name in ("fastapi", "loguru", "psycopg", "bcrypt"):
+              importlib.import_module(name)
+          print("Critical imports OK")
+          PY
 
       - name: Run unit tests (pytest)
         run: python -m pytest -q tests

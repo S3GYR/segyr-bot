@@ -17,5 +17,7 @@ redis==5.0.8
 requests==2.32.3
 rq==1.16.2
 tiktoken==0.7.0
+sentry-sdk==2.16.0
+stripe==11.3.0
 pytest==8.3.3
 pytest-asyncio==0.24.0
