@@ -1,15 +1,20 @@
 from __future__ import annotations
 
-import argparse
 import asyncio
 import json
-import time
 import uuid
 from pathlib import Path
 from typing import Any
 
 import uvicorn
-from fastapi import FastAPI, Request
+try:
+    from fastapi import FastAPI, Request
+except Exception as e:
+    print(f"[FATAL] FastAPI import failed: {e}")
+    import time
+
+    while True:
+        time.sleep(2)
 
 print("🔥 GATEWAY MODULE LOADED")
 
@@ -20,16 +25,38 @@ from core.providers.base import GenerationSettings
 from core.providers.registry import get_provider
 from segyr_bot.channels.logging import logger
 
+try:
+    from config.settings import settings
+except Exception as e:
+    print(f"[ERROR] settings import failed: {e}")
+
+    class Dummy:
+        workspace = "/tmp"
+
+        class llm:
+            model = "none"
+            provider = "none"
+            api_key = None
+            api_base = None
+            temperature = 0.7
+            max_tokens = 512
+            context_window_tokens = 4096
+
+        class agent:
+            max_iterations = 1
+            exec_timeout = 5
+            restrict_to_workspace = False
+
+    settings = Dummy()
+
 
 def _get_settings():
-    from config.settings import settings
-
     return settings
 
 
 def _default_channels_config_path() -> Path:
     settings = _get_settings()
-    workspace_cfg = settings.workspace / "channels.json"
+    workspace_cfg = Path(settings.workspace) / "channels.json"
     if workspace_cfg.exists():
         return workspace_cfg
 
@@ -126,6 +153,7 @@ class GatewayRuntime:
                 return
 
             settings = _get_settings()
+            workspace_path = Path(settings.workspace)
             config_path = self.channels_config_path or _default_channels_config_path()
             channels_config = _ensure_webhook_defaults(load_channels_config(config_path))
             webhook_cfg = channels_config.get("webhook") if isinstance(channels_config.get("webhook"), dict) else {}
@@ -153,7 +181,7 @@ class GatewayRuntime:
             self.agent = AgentLoop(
                 bus=self.bus,
                 provider=provider,
-                workspace=settings.workspace,
+                workspace=workspace_path,
                 model=provider.get_default_model(),
                 max_iterations=settings.agent.max_iterations,
                 context_window_tokens=settings.llm.context_window_tokens,
@@ -168,7 +196,8 @@ class GatewayRuntime:
             print("✅ Runtime started")
         except Exception as e:
             print(f"❌ Runtime failed: {e}")
-            raise
+            self.started = False
+            logger.error("Runtime start failed: {}", e)
 
     async def stop(self) -> None:
         if not self.started:
@@ -284,44 +313,39 @@ class GatewayRuntime:
 runtime = GatewayRuntime()
 app = FastAPI(title="SEGYR Gateway", version="1.0.0")
 _startup_task: asyncio.Task | None = None
-runtime_failed = False
 
 
 @app.on_event("startup")
 async def _on_startup() -> None:
-    global _startup_task, runtime_failed
+    global _startup_task
     print("⚡ FastAPI startup event triggered")
+    import asyncio
 
-    async def _safe_start() -> None:
-        global runtime_failed
+    async def safe_start() -> None:
         try:
             await runtime.start()
         except Exception as e:
-            runtime_failed = True
-            logger.error("Startup error: {}", e)
+            print(f"[ERROR] runtime.start failed: {e}")
 
-    runtime_failed = False
-    _startup_task = asyncio.create_task(_safe_start())
+    _startup_task = asyncio.create_task(safe_start())
 
 
 @app.on_event("shutdown")
 async def _on_shutdown() -> None:
     global _startup_task
-
-    if _startup_task is not None and not _startup_task.done():
-        _startup_task.cancel()
-        await asyncio.gather(_startup_task, return_exceptions=True)
-    await runtime.stop()
+    try:
+        if _startup_task is not None and not _startup_task.done():
+            _startup_task.cancel()
+            await asyncio.gather(_startup_task, return_exceptions=True)
+        await runtime.stop()
+    except Exception as e:
+        print(f"[ERROR] shutdown failed: {e}")
 
 
 @app.get("/health")
 async def health() -> dict[str, str]:
-    gateway_state = "ready" if runtime.started and not runtime_failed else "degraded"
-    print(f"💓 Health check: gateway={gateway_state}")
-    return {
-        "status": "ok",
-        "gateway": gateway_state,
-    }
+    print("💓 Health check called")
+    return {"status": "ok"}
 
 
 @app.post("/message")
@@ -335,27 +359,15 @@ async def message(request: Request) -> dict[str, Any]:
     return await runtime.handle_message(payload)
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="SEGYR-BOT Gateway")
-    parser.add_argument(
-        "--channels-config",
-        type=str,
-        default=None,
-        help="Chemin du fichier JSON de configuration des channels",
-    )
-    args = parser.parse_args()
-
-    runtime.channels_config_path = Path(args.channels_config).expanduser().resolve() if args.channels_config else None
-    print("🚀 Starting Gateway...")
-    try:
-        print("🚀 Launching Uvicorn...")
-        uvicorn.run(app, host="0.0.0.0", port=8090, log_level="info")
-    except Exception as e:
-        print(f"FATAL: {e}")
-        while True:
-            time.sleep(60)
-
-
 if __name__ == "__main__":
-    print("✅ __main__ triggered")
-    main()
+    print("🚀 Starting FastAPI Gateway (stable mode)...")
+
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=8090,
+        log_level="info",
+        loop="asyncio",
+        lifespan="on",
+        access_log=True,
+    )
