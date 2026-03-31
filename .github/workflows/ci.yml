@@ -144,14 +144,15 @@ jobs:
           }
           trap cleanup EXIT
 
-          echo "Waiting for gateway health..."
-          for i in {1..60}; do
-            if curl -fsS "http://127.0.0.1:8090/health" >/dev/null; then
+          echo "Waiting for gateway..."
+          for i in {1..30}; do
+            if curl -s "http://localhost:8090/health" > /dev/null; then
+              echo "Gateway ready"
               break
             fi
-            sleep 1
+            sleep 2
           done
-          curl -fsS "http://127.0.0.1:8090/health" >/dev/null
+          curl -fsS "http://localhost:8090/health" >/dev/null
 
           set +e
           python run_redis_e2e.py \

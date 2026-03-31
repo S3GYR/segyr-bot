@@ -229,15 +229,18 @@ services:
       SEGYR_LOG_LEVEL: ${SEGYR_LOG_LEVEL:-INFO}
       SEGYR_DEBUG: "false"
     depends_on:
-      postgres:
-        condition: service_healthy
+      api:
+        condition: service_started
       redis:
         condition: service_healthy
-      ollama:
-        condition: service_healthy
-    command: ["python", "-m", "segyr_bot.gateway", "--channels-config", "/app/segyr_bot/channels/config.example.json"]
+    command: ["python", "-m", "segyr_bot.gateway"]
     ports:
       - "8090:8090"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     volumes:
       - logs_data:/app/logs
       - workspace_data:/app/workspace
