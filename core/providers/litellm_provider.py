@@ -11,6 +11,7 @@ from loguru import logger
 
 from core.cache.llm_cache import get_cached_response, set_cached_response
 from core.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+from core.utils.circuit_breaker import CircuitBreaker, CircuitOpenError
 
 
 class LiteLLMProvider(LLMProvider):
@@ -44,6 +45,12 @@ class LiteLLMProvider(LLMProvider):
         self._fallback_model = fallback_model
         self._timeout_s = max(1.0, float(timeout_s))
         self._retry_attempts = max(1, int(retry_attempts))
+        self._breaker = CircuitBreaker(
+            failure_threshold=5,
+            recovery_timeout_s=30.0,
+            half_open_max_calls=1,
+            name="llm",
+        )
 
     def get_default_model(self) -> str:
         return self._default_model
@@ -120,7 +127,7 @@ class LiteLLMProvider(LLMProvider):
                     "messages": clean_messages,
                     "max_tokens": max_tokens,
                     "temperature": temperature,
-                    "timeout": self._timeout_s,
+                    "timeout": min(self._timeout_s, 5.0),
                 }
                 if self.api_key:
                     kwargs["api_key"] = self.api_key
@@ -131,8 +138,16 @@ class LiteLLMProvider(LLMProvider):
                 if tool_choice is not None:
                     kwargs["tool_choice"] = tool_choice
 
+                async def _call_model() -> Any:
+                    return await self._completion_with_retry(litellm, kwargs, model_id=model_id)
+
                 try:
-                    response = await self._completion_with_retry(litellm, kwargs, model_id=model_id)
+                    response = await self._breaker.call_async(
+                        _call_model,
+                        timeout_s=kwargs["timeout"],
+                        max_attempts=min(3, self._retry_attempts + 1),
+                        backoff_base_s=0.5,
+                    )
                     choice = response.choices[0]
                     msg = choice.message
                     content = msg.content or None
@@ -173,6 +188,9 @@ class LiteLLMProvider(LLMProvider):
                         finish_reason=finish_reason,
                         usage=usage,
                     )
+                except CircuitOpenError as exc:
+                    last_exc = exc
+                    logger.error("LiteLLM circuit open, skipping model {}", model_id)
                 except Exception as exc:  # pragma: no cover - runtime safety
                     last_exc = exc
                     if idx + 1 < len(candidate_models):

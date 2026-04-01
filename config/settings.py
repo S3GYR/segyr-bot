@@ -17,6 +17,11 @@ class LLMSettings(BaseSettings):
     provider: str = "litellm"
     model: str = "ollama/qwen3.5:9b"
     fallback_model: str = "ollama/qwen3.5:4b"
+    secondary_provider: str | None = None
+    secondary_model: str | None = None
+    secondary_api_key: str | None = None
+    secondary_api_base: str | None = None
+    fast_model: str | None = None
     mode: Literal["fast", "quality"] = "quality"
     api_key: str = ""
     api_base: str = "http://ollama:11434"
@@ -105,6 +110,9 @@ class Settings(BaseSettings):
     global_rate_limit_window_seconds: int = Field(default=60, alias="SEGYR_GLOBAL_RATE_LIMIT_WINDOW_SECONDS")
     global_rate_limit_max_requests: int = Field(default=120, alias="SEGYR_GLOBAL_RATE_LIMIT_MAX_REQUESTS")
     global_rate_limit_fail_closed: bool = Field(default=False, alias="SEGYR_GLOBAL_RATE_LIMIT_FAIL_CLOSED")
+    webhook_secret: str | None = Field(default=None, alias="SEGYR_WEBHOOK_SECRET")
+    rate_limit_window_seconds: int = Field(default=10, alias="SEGYR_RATE_LIMIT_WINDOW")
+    rate_limit_max_requests: int = Field(default=10, alias="SEGYR_RATE_LIMIT_MAX")
     api_auth_token: str | None = Field(default=None, alias="SEGYR_API_AUTH_TOKEN")
     api_token_header: str = Field(default="X-API-Token", alias="SEGYR_API_TOKEN_HEADER")
     api_trusted_hosts_raw: str = Field(

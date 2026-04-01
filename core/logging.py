@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 import sys
 import time
+import uuid
+from contextvars import ContextVar
 from typing import Any, Callable, Dict
 
 from fastapi import FastAPI, Request
@@ -17,7 +19,16 @@ if sys.platform == "win32":
     except Exception:
         pass
 
-# Structured JSON logging configuration
+# Structured JSON logging configuration with request_id enrichment
+request_id_var: ContextVar[str | None] = ContextVar("request_id", default=None)
+
+
+def _patch_request_id(record: dict[str, Any]) -> None:
+    rid = request_id_var.get()
+    if rid:
+        record["extra"]["request_id"] = rid
+
+
 logger.remove()
 logger.add(
     sink=sys.stdout,
@@ -26,6 +37,7 @@ logger.add(
     enqueue=True,
     backtrace=False,
     diagnose=False,
+    patcher=_patch_request_id,
 )
 
 
@@ -43,6 +55,14 @@ def setup_sentry() -> None:
 
 
 def log_requests(app: FastAPI) -> None:
+    @app.middleware("http")
+    async def _request_id_middleware(request: Request, call_next: Callable):  # type: ignore
+        rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+        request_id_var.set(rid)
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = rid
+        return response
+
     @app.middleware("http")
     async def _log_requests(request: Request, call_next: Callable):  # type: ignore
         start = time.time()

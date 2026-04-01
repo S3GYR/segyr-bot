@@ -1,246 +1,83 @@
-![CI](https://github.com/S3GYR/segyr-bot/actions/workflows/ci.yml/badge.svg)
+# SEGYR BOT - Observabilité temps réel (FastAPI + WebSocket + Redis + React)
 
-# 🚀 SEGYR Bot
+## Présentation
 
-> Autonomous AI orchestration platform with self-repair, policy-driven decisions, and real-time observability.
+Console d’observabilité temps réel : dashboards live, logs en continu,
+métriques live, détection de fallback LLM, scoring de performance et
+timelines par request_id.
 
----
+## Architecture
 
-## 🌍 Overview
+- Backend : FastAPI (HTTP + WebSocket `/ws/logs`, `/ws/metrics`)
+- WebSockets : ping/pong heartbeat, reconnexion backoff, contrôle
+  d’origine/token
+- Redis : Pub/Sub pour diffusion des logs
+- Frontend : React (Vite) avec streaming temps réel (logs + metrics)
+- Flux WebSocket (texte) :
+  - Client → ping / données optionnelles
+  - Serveur → pong + `server_ping` périodique, messages JSON (logs/metrics)
 
-SEGYR is not just an AI agent.
+## Fonctionnalités
 
-It is a **self-monitoring, decision-making, and self-repairing system** designed to operate reliably in production environments.
+- Logs en temps réel (groupement par request_id, timeline, scoring,
+  debug mode)
+- Metrics live (latence, queue, fallbacks, requêtes)
+- Détection fallback LLM et badge visuel
+- Scoring performance (latence, erreurs, fallback)
+- Heartbeat WebSocket + reconnexion automatique
 
----
+## Installation
 
-## 🎯 Core Capabilities
-
-* 🤖 Autonomous decision-making
-* 🔁 Self-repair loop
-* 📊 Observability-driven architecture
-* ⚖️ Policy-based execution
-* 🧠 Memory & context persistence
-* ⚡ Real-time API + dashboard
-
----
-
-## 🏗️ System Architecture
-
-```mermaid
-flowchart TD
-
-Dashboard --> API[FastAPI API]
-
-API --> Agent[Agent Loop - Skills]
-API --> Policy[Policy Engine]
-
-Agent --> Repair[Auto-Repair]
-Policy --> Repair
-
-Repair --> Redis[Redis Cache / Memory]
-```
-
----
-
-## 🧠 Architecture Layers
-
-### 🤖 Agent Layer
-
-* `core/agent/loop.py`
-* `segyr_bot/skills/router.py`
-* `segyr_bot/skills/loader.py`
-
-### 🧠 Intelligence Layer
-
-* `core/monitoring/policy_engine.py`
-
-### ⚙️ Execution Layer
-
-* `core/monitoring/auto_repair.py`
-
-### 🗄️ Data Layer
-
-* Redis (cache + memory)
-* Queue system
-
-### 📊 Observability Layer
-
-* `/health`
-* `/health/full`
-* `/metrics`
-* JSON logs
-
-### 🖥️ Interface Layer
-
-* `/dashboard`
-* `/dashboard/data`
-* `/dashboard/summary`
-
----
-
-## 🛠️ Installation (Local)
+### Backend
 
 ```bash
-git clone https://github.com/S3GYR/segyr-bot.git
-cd segyr-bot
-
 python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
-
+source .venv/bin/activate  # ou .venv\Scripts\activate sous Windows
 pip install -r requirements.txt
+export REDIS_URL=redis://localhost:6379
+uvicorn segyr_bot.gateway:app --host 0.0.0.0 --port 8090
 ```
 
----
-
-## 🎨 Frontend
+### Frontend
 
 ```bash
 cd frontend
 npm install
-npm run build
+npm run dev   # ou npm run build && npm run preview
 ```
 
----
+## Variables d’environnement
 
-## ▶️ Run the API
+### Backend
+
+- REDIS_URL (ex: redis://redis:6379)
+- MAX_WS_CONNECTIONS (limite globale WS, 0 = illimité)
+- WS_MAX_SIZE (bytes max par message WS)
+- WS_PING_INTERVAL (intervalle ping serveur, sec)
+- MAX_WS_PER_IP / MAX_WS_PER_MIN_IP (throttle IP)
+- WS_ALLOWED_ORIGINS (ex: <http://localhost:3200>)
+- WS_TOKEN (optionnel, header X-WS-Token)
+
+### Frontend
+
+- VITE_API_BASE (ex: <http://localhost:8090>)
+- VITE_WS_LOGS (ex: ws://localhost:8090/ws/logs)
+- VITE_WS_METRICS (ex: ws://localhost:8090/ws/metrics)
+
+## Lancement avec Docker
 
 ```bash
-uvicorn api.main:app --host 0.0.0.0 --port 8000
+docker-compose up --build
 ```
 
-👉 API available at:
+- backend : gunicorn + uvicorn workers, port 8090
+- frontend : Vite dev/preview ou build statique, port 3200
+- redis : service pub/sub
 
-```
-http://localhost:8000
-```
+## Notes production
 
----
-
-## 🐳 Docker (Production Ready)
-
-### Build locally
-
-```bash
-docker build -t segyr-bot .
-```
-
-### Run
-
-```bash
-docker run -p 8000:8000 segyr-bot
-```
-
----
-
-## 📦 Docker Image (GHCR)
-
-```bash
-docker pull ghcr.io/S3GYR/segyr-bot:latest
-```
-
----
-
-## 🔐 Environment Variables
-
-```env
-SEGYR_DB_PASSWORD=your_password
-SEGYR_JWT_SECRET=your_secret
-SEGYR_API_AUTH_TOKEN=your_token
-
-SEGYR_REDIS_URL=redis://localhost:6379/0
-SEGYR_LOG_LEVEL=INFO
-SEGYR_DEBUG=false
-```
-
----
-
-## 🧪 Testing
-
-```bash
-pytest -q
-```
-
----
-
-## ⚙️ CI/CD
-
-* ✅ GitHub Actions (tests + build)
-* ✅ Docker image build & push (GHCR)
-* ✅ Ready for deployment
-
----
-
-## 🇫🇷 Version Française
-
-### 🚀 Présentation
-
-SEGYR est une plateforme d’orchestration IA autonome capable de :
-
-* analyser son état
-* prendre des décisions
-* s’auto-corriger
-* mesurer ses performances
-
----
-
-### 🎯 Fonctionnalités
-
-* Autonomie complète
-* Boucle d’auto-réparation
-* Observabilité intégrée
-* Décisions pilotées par règles
-* Mémoire persistante
-
----
-
-### 🏗️ Architecture
-
-```mermaid
-flowchart TD
-
-Dashboard --> API[FastAPI API]
-
-API --> Agent[Agent Loop]
-API --> Policy[Policy Engine]
-
-Agent --> Repair[Auto-Repair]
-Policy --> Repair
-
-Repair --> Redis[Cache / Memory]
-```
-
----
-
-### ▶️ Lancement
-
-```bash
-uvicorn api.main:app --reload
-```
-
----
-
-## 🧠 Vision
-
-SEGYR vise à devenir :
-
-> Une IA capable de piloter, corriger et optimiser des systèmes complexes de manière autonome.
-
----
-
-## 📜 License
-
-MIT License
-
----
-
-## 🤝 Contribution
-
-Pull requests welcome.
-For major changes, open an issue first.
-
----
-
-## 🔥 SEGYR
-
-> “Autonomous systems that think, act, and repair themselves.”
+- Scaling WebSocket : sticky sessions ou nœuds dédiés WS, LB compatible
+  Upgrade/Connection, augmenter `ulimit -n`.
+- Redis tuning : surveiller pub/sub (latence, buffer),
+  client-output-buffer-limit, ops/sec.
+- Load balancer : timeout > intervalle ping, proxy WebSocket activé.

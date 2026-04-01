@@ -1,6 +1,8 @@
 import axios from 'axios'
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8090'
+const LOG_WS = import.meta.env.VITE_WS_LOGS || 'ws://localhost:8090/ws/logs'
+const METRICS_WS = import.meta.env.VITE_WS_METRICS || 'ws://localhost:8090/ws/metrics'
 
 const client = axios.create({
   baseURL: API_BASE,
@@ -10,8 +12,8 @@ const client = axios.create({
   timeout: 5000,
 })
 
-export const fetchHealth = () => client.get('/health').then((r) => r.data)
-export const fetchReadiness = () => client.get('/readiness').then((r) => r.data)
+export const getHealth = () => client.get('/health').then((r) => r.data)
+export const getReadiness = () => client.get('/readiness').then((r) => r.data)
 
 export const fetchMetricsRaw = async () => {
   const res = await client.get('/metrics', { responseType: 'text' })
@@ -32,7 +34,7 @@ export const parsePrometheus = (text) => {
   return data
 }
 
-export const fetchMetrics = async () => parsePrometheus(await fetchMetricsRaw())
+export const getMetrics = async () => parsePrometheus(await fetchMetricsRaw())
 
 export const sendMessage = async ({ text, chat_id = 'web', mode = 'auto' }) => {
   const res = await client.post(
@@ -40,10 +42,13 @@ export const sendMessage = async ({ text, chat_id = 'web', mode = 'auto' }) => {
     { text, chat_id, mode },
     {
       headers: { 'X-LLM-Mode': mode },
-      timeout: 5000,
+      timeout: 8000,
     },
   )
   return res.data
 }
+
+export const getLogWebSocketUrl = () => LOG_WS
+export const getMetricsWebSocketUrl = () => METRICS_WS
 
 export default client

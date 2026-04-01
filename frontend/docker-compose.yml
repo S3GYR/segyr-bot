@@ -1,0 +1,50 @@
+version: "3.9"
+
+services:
+  backend:
+    build: ..
+    command: ["gunicorn", "-k", "uvicorn.workers.UvicornWorker", "-c", "gunicorn.conf.py", "segyr_bot.gateway:app"]
+    environment:
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
+      - MAX_WS_CONNECTIONS=${MAX_WS_CONNECTIONS:-2000}
+      - WS_MAX_SIZE=${WS_MAX_SIZE:-16777216}
+      - WS_PING_INTERVAL=${WS_PING_INTERVAL:-15}
+      - MAX_WS_PER_IP=${MAX_WS_PER_IP:-0}
+      - MAX_WS_PER_MIN_IP=${MAX_WS_PER_MIN_IP:-0}
+      - WS_ALLOWED_ORIGINS=${WS_ALLOWED_ORIGINS:-http://localhost:3200}
+      - WS_TOKEN=${WS_TOKEN:-}
+    ports:
+      - "8090:8090"
+    depends_on:
+      - redis
+    restart: unless-stopped
+    networks:
+      - segyr-net
+
+  frontend:
+    build: .
+    working_dir: /frontend
+    command: ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "3200"]
+    environment:
+      - VITE_API_BASE=${VITE_API_BASE:-http://localhost:8090}
+      - VITE_WS_LOGS=${VITE_WS_LOGS:-ws://localhost:8090/ws/logs}
+      - VITE_WS_METRICS=${VITE_WS_METRICS:-ws://localhost:8090/ws/metrics}
+    ports:
+      - "3200:3200"
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - segyr-net
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    restart: always
+    networks:
+      - segyr-net
+
+networks:
+  segyr-net:
+    driver: bridge

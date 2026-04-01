@@ -1,41 +1,31 @@
 # Progression SEGYR
 
-## ✅ TERMINE
+## ✅ État actuel
 
-- Redis cache LLM + memoire persistante Redis
-- Queue async (RQ + fallback Redis)
-- Script E2E `run_redis_e2e.py` avec score systeme
-- Endpoint `GET /health/full`
-- Pipeline CI/CD GitHub Actions (pytest + E2E + score gate)
-- Auth securisee (bcrypt + fallback SHA256)
-- Tests unitaires pytest
-- Auto-repair complet (analyse -> decision -> action -> verification)
-- Policy engine (decision execute/skip, cooldown, regles configurables)
-- Alerting connecte au policy engine
-- Dashboard temps reel (React + Tailwind + Recharts)
-- API `GET /dashboard/data`
-- Audit logs JSONL (`logs/auto_repair_history.jsonl`, `logs/repair_audit.jsonl`)
-- Deploiement production (Gunicorn + Nginx + HTTPS)
-- Securite perimetre (rate limit, IP allowlist, headers de securite)
-- Cleanup final repository (suppression legacy, caches, logs runtime, structure rationalisee, .gitignore durci)
+- WebSocket logs
+- WebSocket metrics
+- Heartbeat
+- Reconnexion automatique
+- Groupement logs
+- Debug mode
+- Scoring
+- Fallback detection
 
-## 🔄 EN COURS
+## 🔄 Changements récents
 
-- Optimisation de l'alerting (qualite signal / reduction bruit)
-- Amelioration du policy engine (comportement plus adaptatif)
+- Hardening WebSocket (origin/token, ping/pong, limites IP/taille)
+- Intégration Redis pub/sub dédiée pour logs
+- Améliorations UI (Topbar état WS, timeline, score)
+- Optimisation performance (backoff, buffers bornés)
 
-## 🚀 A VENIR
+## � Prochaines étapes
 
-- Learning engine (auto-adaptation des decisions)
-- Architecture multi-agent
-- Monitoring avance (Prometheus + Grafana)
-- Clustering / scaling multi-node
+- Tracing avancé / corrélation étendue
+- Multi-utilisateurs / auth renforcée
+- Filtres avancés (niveau, service, time range)
+- Tests de charge (k6/Locust) automatisés CI
 
-## 📈 NIVEAU ACTUEL
+## 📈 Niveau actuel
 
-### Niveau 5+ — Plateforme IA autonome
-
-- auto-repair operationnel
-- policy engine operationnel
-- observabilite complete (health + metrics + audit)
-- dashboard temps reel
+Plateforme d’observabilité temps réel avec dashboard, logs groupés, métriques
+live, fallback detection et scoring.

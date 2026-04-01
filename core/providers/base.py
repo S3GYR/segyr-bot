@@ -67,6 +67,10 @@ class LLMProvider(ABC):
         self.api_base = api_base
         self.generation: GenerationSettings = GenerationSettings()
 
+    def set_mode(self, mode: str) -> None:
+        # Default no-op; routers/providers can override.
+        return None
+
     @staticmethod
     def _sanitize_empty_content(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []

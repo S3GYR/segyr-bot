@@ -1,198 +1,202 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react'
-import { fetchDashboardSummary, runRepair, runRepairDryRun } from '../api'
-import HealthCard from '../components/HealthCard'
-import HistoryTable from '../components/HistoryTable'
-import MetricsGraph from '../components/MetricsGraph'
-import PolicyCard from '../components/PolicyCard'
-import RepairCard from '../components/RepairCard'
+import React, { useEffect, useMemo, useState } from 'react'
+import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis, Bar, BarChart } from 'recharts'
+import Spinner from '../components/Spinner'
+import Card from '../components/Card'
+import { getMetricsWebSocketUrl } from '../lib/api'
+import useWebSocket from '../hooks/useWebSocket'
 
-const POLL_INTERVAL_MS = 5000
-const HISTORY_LIMIT = 30
-const GRAPH_WINDOW = 36
+const POLL_INTERVAL_MS = 4000
+const MAX_POINTS = 50
 
-function safeNumber(value) {
-  if (typeof value === 'number' && Number.isFinite(value)) return value
-  const parsed = Number(value)
-  return Number.isFinite(parsed) ? parsed : null
-}
+const fmt = (v, digits = 2) => (Number.isFinite(v) ? Number(v).toFixed(digits) : '0')
 
-function extractDetails(health) {
-  if (!health || typeof health !== 'object') return {}
-  const details = health.details
-  if (!details || typeof details !== 'object') return {}
-  if (details.details && typeof details.details === 'object') {
-    return details.details
-  }
-  return details
-}
-
-function getLlmLatency(health) {
-  const details = extractDetails(health)
-  const cache = details.cache && typeof details.cache === 'object' ? details.cache : {}
-  const firstDuration = safeNumber(cache.first?.duration_s)
-  if (firstDuration !== null) return firstDuration
-  return safeNumber(details.llm_latency_seconds)
-}
-
-function getCacheGain(health) {
-  const details = extractDetails(health)
-  const cache = details.cache && typeof details.cache === 'object' ? details.cache : {}
-  const latencyRatio = safeNumber(cache.latency_ratio)
-  if (latencyRatio && latencyRatio > 0) return 1 / latencyRatio
-  const firstDuration = safeNumber(cache.first?.duration_s)
-  const secondDuration = safeNumber(cache.second?.duration_s)
-  if (firstDuration !== null && secondDuration && secondDuration > 0) {
-    return firstDuration / secondDuration
-  }
-  return null
-}
-
-function getQueueStatus(health) {
-  const details = extractDetails(health)
-  if (health?.components && typeof health.components === 'object' && 'queue' in health.components) {
-    return Boolean(health.components.queue)
-  }
-  if (health?.details?.components && typeof health.details.components === 'object' && 'queue' in health.details.components) {
-    return Boolean(health.details.components.queue)
-  }
-  if (details.queue && typeof details.queue === 'object' && 'ok' in details.queue) {
-    return Boolean(details.queue.ok)
-  }
-  return false
-}
-
-function formatTimeLabel(ts) {
-  if (!ts) return '--:--:--'
-  const date = new Date(ts)
-  if (Number.isNaN(date.getTime())) return '--:--:--'
-  return date.toLocaleTimeString('fr-FR', { hour12: false })
+function statusColor(status) {
+  if (status === 'ok') return 'text-[#10B981]'
+  if (status === 'degraded') return 'text-[#F59E0B]'
+  return 'text-[#EF4444]'
 }
 
 export default function Dashboard() {
-  const [summary, setSummary] = useState(null)
-  const [loading, setLoading] = useState(true)
+  const [metrics, setMetrics] = useState({})
+  const [seriesLatency, setSeriesLatency] = useState([])
+  const [seriesRequests, setSeriesRequests] = useState([])
   const [error, setError] = useState('')
-  const [actionStatus, setActionStatus] = useState('')
-  const [actionLoading, setActionLoading] = useState(false)
-  const [series, setSeries] = useState([])
+  const [loading, setLoading] = useState(true)
 
-  const refresh = useCallback(async () => {
-    try {
-      const payload = await fetchDashboardSummary(HISTORY_LIMIT)
-      setSummary(payload)
-      setError('')
-
-      const health = payload?.health || {}
-      const repair = payload?.repair || {}
-      const repairsCount = Array.isArray(repair?.recent_history) ? repair.recent_history.length : 0
-      const point = {
-        time: formatTimeLabel(health?.timestamp || new Date().toISOString()),
-        score: safeNumber(health?.score) ?? 0,
-        llmLatency: safeNumber(getLlmLatency(health)) ?? 0,
-        repairsCount,
-      }
-      setSeries((prev) => [...prev, point].slice(-GRAPH_WINDOW))
-    } catch (err) {
-      setError(err?.response?.data?.detail || err?.message || 'Erreur de chargement dashboard')
-    } finally {
-      setLoading(false)
-    }
-  }, [])
+  const wsUrl = getMetricsWebSocketUrl()
+  const { status: wsStatus, lastMessage, latencyMs: wsLatency } = useWebSocket(wsUrl)
 
   useEffect(() => {
-    let active = true
+    if (!lastMessage) return
+    const data = lastMessage || {}
+    setMetrics(data)
+    const ts = data.timestamp ? new Date(data.timestamp * 1000).toLocaleTimeString('fr-FR', { hour12: false }) : new Date().toLocaleTimeString('fr-FR', { hour12: false })
+    const latency = Number(data.llm_avg_latency_ms || data.request_latency_ms) || 0
+    const req = Number(data.requests_total) || 0
+    const fallback = Number(data.llm_fallbacks || data.fallback || 0) || 0
+    setSeriesLatency((prev) => [...prev, { ts, latency }].slice(-MAX_POINTS))
+    setSeriesRequests((prev) => [...prev, { ts, req, fallback }].slice(-MAX_POINTS))
+    setError('')
+    setLoading(false)
+  }, [lastMessage])
 
-    const boot = async () => {
-      if (!active) return
-      await refresh()
+  useEffect(() => {
+    if (wsStatus === 'error') {
+      setError('WebSocket métriques en erreur')
+      setLoading(false)
     }
-
-    boot()
-    const intervalId = setInterval(() => {
-      if (active) {
-        refresh()
-      }
-    }, POLL_INTERVAL_MS)
-
-    return () => {
-      active = false
-      clearInterval(intervalId)
+    if (wsStatus === 'open') {
+      setError('')
     }
-  }, [refresh])
+  }, [wsStatus])
 
-  const health = summary?.health || {}
-  const policy = summary?.policy || {}
-  const repair = summary?.repair || {}
-  const history = summary?.history || {}
+  const cards = useMemo(() => {
+    const req = metrics.segyr_requests_total ?? metrics.requests_total ?? 0
+    const llmReq = metrics.segyr_llm_requests_total ?? metrics.llm_requests_total ?? 0
+    const fallback = metrics.segyr_llm_fallback_total ?? metrics.llm_fallbacks ?? 0
+    const queue = metrics.segyr_queue_inbound_depth ?? metrics.queue_inbound_depth ?? 0
+    const queueMax = metrics.segyr_queue_inbound_max ?? metrics.queue_inbound_max ?? 0
+    const rejected = metrics.segyr_requests_rejected_busy ?? metrics.rejected_busy ?? 0
+    return [
+      { title: 'Requêtes HTTP', value: req, accent: 'text-[#3B82F6]' },
+      { title: 'LLM requêtes', value: llmReq, accent: 'text-[#10B981]' },
+      { title: 'Fallbacks', value: fallback, accent: 'text-[#F59E0B]' },
+      { title: 'Queue inbound', value: `${queue}/${queueMax || '?'} (rej:${rejected})`, accent: 'text-[#22d3ee]' },
+    ]
+  }, [metrics])
 
-  const llmLatency = useMemo(() => getLlmLatency(health), [health])
-  const cacheGain = useMemo(() => getCacheGain(health), [health])
-  const queueStatus = useMemo(() => getQueueStatus(health), [health])
-
-  const handleAction = async (mode) => {
-    setActionLoading(true)
-    setActionStatus('')
-    try {
-      const payload = mode === 'dry-run' ? await runRepairDryRun() : await runRepair()
-      const correlationId = payload?.correlation_id || payload?.last_result?.correlation_id || 'n/a'
-      setActionStatus(`${mode === 'dry-run' ? 'Dry-run' : 'Repair'} lancé (correlation_id=${correlationId})`)
-      await refresh()
-    } catch (err) {
-      setActionStatus(`Action échouée: ${err?.response?.data?.detail || err?.message || 'unknown error'}`)
-    } finally {
-      setActionLoading(false)
-    }
-  }
-
-  if (loading) {
-    return <div className="text-sm text-slate-300">Chargement du cockpit observabilité...</div>
-  }
+  const latencyCards = useMemo(() => {
+    return [
+      { label: 'Latence moy. (ms)', value: fmt(metrics.segyr_llm_avg_latency_ms ?? metrics.llm_avg_latency_ms) },
+      { label: 'Latence primary (ms)', value: fmt(metrics.segyr_llm_avg_latency_primary_ms ?? metrics.llm_avg_latency_primary_ms) },
+      { label: 'Latence secondary (ms)', value: fmt(metrics.segyr_llm_avg_latency_secondary_ms ?? metrics.llm_avg_latency_secondary_ms) },
+      { label: 'Latence fast (ms)', value: fmt(metrics.segyr_llm_avg_latency_fast_ms ?? metrics.llm_avg_latency_fast_ms) },
+    ]
+  }, [metrics])
 
   return (
     <div className="space-y-6">
-      <header className="rounded-2xl border border-surface-border bg-surface-card/90 p-5 shadow-xl shadow-black/30">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+      <Card className="p-5 shadow-xl shadow-black/30" hover={false}>
+        <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <h1 className="text-2xl font-semibold text-slate-100">SEGYR Observability Cockpit</h1>
-            <p className="text-sm text-slate-400">Health, policy engine, auto-repair et audit en temps réel (refresh 5s).</p>
+            <h1 className="text-2xl font-semibold text-slate-100">SEGYR BOT · Dashboard</h1>
+            <p className="text-sm text-slate-400">Observabilité temps réel · WebSocket métriques.</p>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={() => handleAction('run')}
-              disabled={actionLoading}
-              className="rounded-xl border border-success/50 bg-success/15 px-4 py-2 text-sm font-semibold text-success transition hover:bg-success/25 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              Lancer repair
-            </button>
-            <button
-              type="button"
-              onClick={() => handleAction('dry-run')}
-              disabled={actionLoading}
-              className="rounded-xl border border-accent/50 bg-accent/15 px-4 py-2 text-sm font-semibold text-accent transition hover:bg-accent/25 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              Dry-run
-            </button>
+          <div className="flex items-center gap-3 text-sm text-slate-400">
+            <span className={`h-2 w-2 rounded-full ${wsStatus === 'open' ? 'bg-[#10B981]' : 'bg-[#F59E0B]'} animate-pulse`} aria-hidden />
+            {wsLatency != null && <span>WS {wsLatency.toFixed(0)} ms</span>}
+            {error && <span className="text-danger">{error}</span>}
           </div>
         </div>
-        {actionStatus && <p className="mt-3 text-xs text-slate-300">{actionStatus}</p>}
-        {error && <p className="mt-2 text-xs text-danger">{error}</p>}
-      </header>
+      </Card>
 
-      <HealthCard health={health} llmLatency={llmLatency} cacheGain={cacheGain} queueStatus={queueStatus} />
+      {loading ? (
+        <Spinner label="Chargement des métriques..." />
+      ) : (
+        <>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+            {cards.map((c) => (
+              <Card key={c.title} className="p-4 shadow-lg shadow-black/20" hover>
+                <p className="text-xs uppercase tracking-wide text-slate-400">{c.title}</p>
+                <p className={`mt-2 text-2xl font-semibold ${c.accent}`}>{c.value}</p>
+              </Card>
+            ))}
+          </div>
 
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-        <PolicyCard policy={policy} />
-        <RepairCard repair={repair} />
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+            <ChartCard title="Latence LLM (ms)">
+              <ResponsiveContainer width="100%" height={240}>
+                <AreaChart data={seriesLatency} margin={{ left: -20, right: 10 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
+                  <XAxis dataKey="ts" stroke="#94a3b8" tick={{ fontSize: 11 }} />
+                  <YAxis stroke="#94a3b8" tick={{ fontSize: 11 }} />
+                  <Tooltip contentStyle={{ background: '#0f172a', border: '1px solid #1f2937' }} />
+                  <Area type="monotone" dataKey="latency" stroke="#22d3ee" fill="#22d3ee22" strokeWidth={2} />
+                </AreaChart>
+              </ResponsiveContainer>
+            </ChartCard>
+
+            <ChartCard title="Requêtes & Fallbacks">
+              <ResponsiveContainer width="100%" height={240}>
+                <BarChart data={seriesRequests} margin={{ left: -10, right: 10 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
+                  <XAxis dataKey="ts" stroke="#94a3b8" tick={{ fontSize: 11 }} />
+                  <YAxis stroke="#94a3b8" tick={{ fontSize: 11 }} />
+                  <Tooltip contentStyle={{ background: '#0f172a', border: '1px solid #1f2937' }} />
+                  <Bar dataKey="req" stackId="a" fill="#22d3ee" radius={[6, 6, 0, 0]} />
+                  <Bar dataKey="fallback" stackId="a" fill="#f59e0b" radius={[6, 6, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </ChartCard>
+
+            <ChartCard title="Latences par provider">
+              <div className="flex flex-col gap-3">
+                {latencyCards.map((c) => (
+                  <div key={c.label} className="flex items-center justify-between rounded-xl border border-[#1F2937] bg-[#121826]/90 px-4 py-3">
+                    <span className="text-sm text-slate-300">{c.label}</span>
+                    <span className="text-lg font-semibold text-[#3B82F6]">{c.value}</span>
+                  </div>
+                ))}
+              </div>
+            </ChartCard>
+          </div>
+
+          <StatusGrid metrics={metrics} />
+        </>
+      )}
+    </div>
+  )
+}
+
+function ChartCard({ title, children }) {
+  return (
+    <div className="rounded-2xl border border-surface-border bg-surface-card/90 p-4 shadow-lg shadow-black/20">
+      <div className="mb-3 flex items-center justify-between">
+        <h3 className="text-base font-semibold text-slate-100">{title}</h3>
       </div>
+      {children}
+    </div>
+  )
+}
 
-      <MetricsGraph points={series} />
+function StatusGrid({ metrics }) {
+  const items = [
+    {
+      label: 'Gateway readiness',
+      status: (metrics.segyr_requests_total || 0) >= 0 ? 'ok' : 'unknown',
+      value: metrics.segyr_requests_total ?? 0,
+    },
+    {
+      label: 'LLM fallback count',
+      status: (metrics.segyr_llm_fallback_total || 0) > 0 ? 'degraded' : 'ok',
+      value: metrics.segyr_llm_fallback_total ?? 0,
+    },
+    {
+      label: 'Inbound queue depth',
+      status:
+        metrics.segyr_queue_inbound_max && metrics.segyr_queue_inbound_depth >= metrics.segyr_queue_inbound_max * 0.9
+          ? 'degraded'
+          : 'ok',
+      value: `${metrics.segyr_queue_inbound_depth || 0}/${metrics.segyr_queue_inbound_max || '?'}`,
+    },
+    {
+      label: 'Rejected (busy)',
+      status: metrics.segyr_requests_rejected_busy > 0 ? 'degraded' : 'ok',
+      value: metrics.segyr_requests_rejected_busy ?? 0,
+    },
+  ]
 
-      <HistoryTable
-        repairs={history.repairs || repair.recent_history || []}
-        policies={history.policy || []}
-        audit={history.audit || repair.recent_audit || []}
-      />
+  return (
+    <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+      {items.map((item) => (
+        <Card key={item.label} className="p-4 shadow-lg shadow-black/20" hover>
+          <p className="text-sm text-slate-400">{item.label}</p>
+          <div className="mt-2 flex items-center justify-between">
+            <span className={`text-sm font-medium ${statusColor(item.status)}`}>{item.status.toUpperCase()}</span>
+            <span className="text-lg font-semibold text-slate-100">{item.value}</span>
+          </div>
+        </Card>
+      ))}
     </div>
   )
 }

@@ -238,7 +238,7 @@ services:
     ports:
       - "8090:8090"
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health', timeout=3)"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/readiness', timeout=3)"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -271,4 +271,9 @@ networks:
   backend:
     driver: bridge
   llm:
+    driver: bridge
+
+# --- Minimal observability stack ---
+
+  segyr-net:
     driver: bridge

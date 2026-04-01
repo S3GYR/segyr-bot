@@ -5,6 +5,7 @@ from __future__ import annotations
 from loguru import logger
 
 from core.providers.base import LLMProvider
+from core.providers.router_provider import MultiLLMRouter
 
 _KNOWN_PREFIXES = ("ollama/", "openai/", "anthropic/", "groq/")
 
@@ -51,7 +52,8 @@ def get_provider(
 
     normalized_model = _normalize_model(model, provider=provider)
     logger.info("Using LiteLLM provider={} model={}", (provider or "auto"), normalized_model)
-    return LiteLLMProvider(
+
+    primary = LiteLLMProvider(
         api_key=api_key,
         api_base=api_base,
         default_model=normalized_model,
@@ -59,3 +61,26 @@ def get_provider(
         timeout_s=settings.llm.timeout,
         retry_attempts=settings.llm.retry_attempts,
     )
+
+    secondary_provider: LLMProvider | None = None
+    if settings.llm.secondary_model:
+        secondary_provider = LiteLLMProvider(
+            api_key=settings.llm.secondary_api_key or None,
+            api_base=settings.llm.secondary_api_base or None,
+            default_model=_normalize_model(settings.llm.secondary_model, provider=settings.llm.secondary_provider),
+            fallback_model=None,
+            timeout_s=settings.llm.timeout,
+            retry_attempts=settings.llm.retry_attempts,
+        )
+
+    if secondary_provider or settings.llm.fast_model:
+        router = MultiLLMRouter(
+            primary=primary,
+            secondary=secondary_provider,
+            fast_model=_normalize_model(settings.llm.fast_model, provider=provider) if settings.llm.fast_model else None,
+            mode=settings.llm.mode,
+        )
+        router.generation = primary.generation
+        return router
+
+    return primary
