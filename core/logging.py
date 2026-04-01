@@ -27,7 +27,10 @@ def _patch_request_id(record: dict[str, Any]) -> None:
     rid = request_id_var.get()
     if rid:
         record["extra"]["request_id"] = rid
+    return record
 
+# Apply patcher via logger.patch for compatibility
+logger = logger.patch(_patch_request_id)
 
 logger.remove()
 logger.add(
@@ -37,7 +40,6 @@ logger.add(
     enqueue=True,
     backtrace=False,
     diagnose=False,
-    patcher=_patch_request_id,
 )
 
 
