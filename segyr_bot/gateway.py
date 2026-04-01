@@ -4,11 +4,13 @@ import asyncio
 from asyncio import QueueFull
 import json
 import logging
+import hmac
 import time
 import uuid
 from pathlib import Path
 from typing import Any
 import os
+import random
 
 import uvicorn
 
@@ -16,6 +18,7 @@ _bootstrap_logger = logging.getLogger("gateway_bootstrap")
 
 try:
     from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
+    from fastapi.middleware.cors import CORSMiddleware
 except Exception as e:
     import time
 
@@ -244,6 +247,18 @@ class GatewayRuntime:
             return True
 
 
+def _sanitize_payload(text: str) -> str:
+    return text.replace("\r", "\\r").replace("\n", "\\n")
+
+
+async def _safe_send(ws: WebSocket, text: str) -> bool:
+    if len(text.encode("utf-8")) > _WS_MAX_SIZE:
+        _PUBSUB_STATS["dropped"] += 1
+        return False
+    await ws.send_text(text)
+    return True
+
+
 def _client_ip(ws: WebSocket) -> str:
     try:
         return ws.client.host or "unknown"
@@ -264,10 +279,12 @@ def _allow_ip(ws: WebSocket) -> bool:
     _prune_recent(ip, now)
     if _MAX_WS_PER_MIN_IP and len(_ip_recent[ip]) >= _MAX_WS_PER_MIN_IP:
         _ip_rejected[ip] = _ip_rejected.get(ip, 0) + 1
+        _conn_counters["rejected_ip"] += 1
         logger.info("ws_reject ip={} reason=rate_per_min count={} limit={}", ip, len(_ip_recent[ip]), _MAX_WS_PER_MIN_IP)
         return False
     if _MAX_WS_PER_IP and _ip_conn.get(ip, 0) >= _MAX_WS_PER_IP:
         _ip_rejected[ip] = _ip_rejected.get(ip, 0) + 1
+        _conn_counters["rejected_ip"] += 1
         logger.info("ws_reject ip={} reason=concurrent count={} limit={}", ip, _ip_conn.get(ip, 0), _MAX_WS_PER_IP)
         return False
     _ip_recent[ip].append(now)
@@ -283,6 +300,16 @@ def _release_ip(ws: WebSocket) -> None:
 
 runtime = GatewayRuntime()
 app = FastAPI(title="SEGYR Gateway", version="1.0.0")
+
+if _WS_ALLOWED_ORIGINS:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=list(_WS_ALLOWED_ORIGINS),
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"]
+    )
+
 log_requests(app)
 _startup_task: asyncio.Task | None = None
 _metrics: dict[str, Any] = {
@@ -291,17 +318,13 @@ _metrics: dict[str, Any] = {
     "rejected_busy": 0,
 }
 _LOG_CHANNEL = "logs"
-_conn_counters = {
-    "active": 0,
-    "accepted": 0,
-    "rejected": 0,
-    "messages_sent": 0,
-}
+_conn_counters: dict[str, int] = {"active": 0, "accepted": 0, "rejected": 0, "messages_sent": 0, "rejected_ip": 0}
 _MAX_WS_CONNECTIONS = int(os.getenv("MAX_WS_CONNECTIONS", "0"))  # 0 means unlimited
 _WS_MAX_SIZE = int(os.getenv("WS_MAX_SIZE", "16777216"))  # 16MB default
 _WS_PING_INTERVAL = float(os.getenv("WS_PING_INTERVAL", "15"))
 _PUBSUB_MAX_BYTES = int(os.getenv("PUBSUB_MAX_BYTES", "65536"))
-_PUBSUB_STATS = {"published": 0, "dropped_oversize": 0, "last_lag_ms": 0, "delivered": 0}
+_PUBSUB_QUEUE_MAX = int(os.getenv("PUBSUB_QUEUE_MAX", "1000"))
+_PUBSUB_STATS: dict[str, float | int] = {"delivered": 0, "last_lag_ms": 0.0, "dropped": 0}
 _MAX_WS_PER_IP = int(os.getenv("MAX_WS_PER_IP", "0"))  # 0 unlimited
 _MAX_WS_PER_MIN_IP = int(os.getenv("MAX_WS_PER_MIN_IP", "0"))  # per minute, 0 unlimited
 _ip_conn: dict[str, int] = {}
@@ -481,6 +504,10 @@ async def _live_metrics() -> dict[str, Any]:
         "llm_avg_latency_primary_ms": _avg("primary"),
         "llm_avg_latency_secondary_ms": _avg("secondary"),
         "llm_avg_latency_fast_ms": _avg("primary_fast"),
+        "ip_rejected": rejected_ip,
+        "pubsub_delivered": _PUBSUB_STATS.get("delivered", 0),
+        "pubsub_lag_ms": _PUBSUB_STATS.get("last_lag_ms", 0.0),
+        "pubsub_dropped": _PUBSUB_STATS.get("dropped", 0),
     }
 
 
@@ -680,6 +707,7 @@ async def metrics() -> Response:
     inbound_max = runtime.bus.inbound_max if runtime.bus else 0
     outbound_max = runtime.bus.outbound_max if runtime.bus else 0
     rejected_busy = _metrics.get("rejected_busy", 0)
+    rejected_ip = _conn_counters.get("rejected_ip", 0)
     llm_stats = runtime.provider.get_metrics() if hasattr(runtime.provider, "get_metrics") else {}
     llm_counts = llm_stats.get("counts", {}) if isinstance(llm_stats, dict) else {}
     llm_fallbacks = llm_stats.get("fallbacks", 0) if isinstance(llm_stats, dict) else 0

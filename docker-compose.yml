@@ -1,279 +1,51 @@
-services:
-  ollama:
-    image: ollama/ollama:latest
-    volumes:
-      - ollama_data:/root/.ollama
-    healthcheck:
-      test: ["CMD", "ollama", "list"]
-      interval: 20s
-      timeout: 10s
-      retries: 10
-      start_period: 20s
-    restart: unless-stopped
-    ports:
-      - "11434:11434"
-    networks:
-      - backend
-      - llm
+version: "3.9"
 
-  postgres:
-    image: postgres:15-alpine
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: backend
+    ports:
+      - "8090:8090"
     environment:
-      POSTGRES_USER: ${SEGYR_DB_USER:-segyr}
-      POSTGRES_PASSWORD: ${SEGYR_DB_PASSWORD:?SEGYR_DB_PASSWORD is required}
-      POSTGRES_DB: ${SEGYR_DB_NAME:-segyrbot}
-    volumes:
-      - pgdata:/var/lib/postgresql/data
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
+      NVIDIA_DRIVER_CAPABILITIES: ${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
+    runtime: nvidia
+    devices:
+      - /dev/nvidia0:/dev/nvidia0
+      - /dev/nvidiactl:/dev/nvidiactl
+      - /dev/nvidia-uvm:/dev/nvidia-uvm
+    depends_on:
+      - redis
+    restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${SEGYR_DB_USER:-segyr} -d ${SEGYR_DB_NAME:-segyrbot}"]
-      interval: 10s
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8090/health"]
+      interval: 30s
       timeout: 5s
-      retries: 5
-      start_period: 15s
+      retries: 3
+    networks:
+      - segyr-net
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: frontend-server
+    ports:
+      - "3200:80"
     restart: unless-stopped
     networks:
-      - backend
+      - segyr-net
 
   redis:
     image: redis:7-alpine
-    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1000"]
-    volumes:
-      - redisdata:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1000", "--protected-mode", "no"]
     restart: unless-stopped
     networks:
-      - backend
-
-  api:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    env_file:
-      - .env
-    environment:
-      SEGYR_DB_HOST: postgres
-      SEGYR_DB_PORT: 5432
-      SEGYR_DB_NAME: ${SEGYR_DB_NAME:-segyrbot}
-      SEGYR_DB_USER: ${SEGYR_DB_USER:-segyr}
-      SEGYR_DB_PASSWORD: ${SEGYR_DB_PASSWORD:?SEGYR_DB_PASSWORD is required}
-      SEGYR_LLM_PROVIDER: ${SEGYR_LLM_PROVIDER:-litellm}
-      SEGYR_LLM_MODEL: ${SEGYR_LLM_MODEL:-ollama/qwen3.5:9b}
-      SEGYR_LLM_FALLBACK_MODEL: ${SEGYR_LLM_FALLBACK_MODEL:-ollama/qwen3.5:4b}
-      SEGYR_LLM_API_BASE: ${SEGYR_LLM_API_BASE:-http://ollama:11434}
-      SEGYR_LLM_TIMEOUT: ${SEGYR_LLM_TIMEOUT:-120}
-      SEGYR_LLM_RETRY_ATTEMPTS: ${SEGYR_LLM_RETRY_ATTEMPTS:-2}
-      SEGYR_REDIS_URL: ${SEGYR_REDIS_URL:-redis://redis:6379/0}
-      REDIS_URL: ${SEGYR_REDIS_URL:-redis://redis:6379/0}
-      SEGYR_JWT_SECRET: ${SEGYR_JWT_SECRET:?SEGYR_JWT_SECRET is required}
-      SEGYR_API_AUTH_TOKEN: ${SEGYR_API_AUTH_TOKEN:?SEGYR_API_AUTH_TOKEN is required}
-      SEGYR_EVOLUTION_API_BASE: ${SEGYR_EVOLUTION_API_BASE:-}
-      SEGYR_EVOLUTION_API_KEY: ${SEGYR_EVOLUTION_API_KEY:-}
-      SEGYR_EVOLUTION_INSTANCE: ${SEGYR_EVOLUTION_INSTANCE:-}
-      SEGYR_EVOLUTION_WEBHOOK_SECRET: ${SEGYR_EVOLUTION_WEBHOOK_SECRET:-}
-      SEGYR_LOG_LEVEL: ${SEGYR_LOG_LEVEL:-INFO}
-      SEGYR_GLOBAL_RATE_LIMIT_ENABLED: ${SEGYR_GLOBAL_RATE_LIMIT_ENABLED:-true}
-      SEGYR_GLOBAL_RATE_LIMIT_WINDOW_SECONDS: ${SEGYR_GLOBAL_RATE_LIMIT_WINDOW_SECONDS:-60}
-      SEGYR_GLOBAL_RATE_LIMIT_MAX_REQUESTS: ${SEGYR_GLOBAL_RATE_LIMIT_MAX_REQUESTS:-120}
-      SEGYR_GLOBAL_RATE_LIMIT_FAIL_CLOSED: ${SEGYR_GLOBAL_RATE_LIMIT_FAIL_CLOSED:-false}
-      SEGYR_API_TRUSTED_HOSTS: ${SEGYR_API_TRUSTED_HOSTS:-localhost,127.0.0.1,api,segyr-api}
-      SEGYR_HTTP_HSTS_MAX_AGE: ${SEGYR_HTTP_HSTS_MAX_AGE:-63072000}
-      SEGYR_HTTP_CSP: ${SEGYR_HTTP_CSP:-default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none';}
-      SEGYR_HTTP_REFERRER_POLICY: ${SEGYR_HTTP_REFERRER_POLICY:-strict-origin-when-cross-origin}
-      SEGYR_AUTO_REPAIR_ENABLED: ${SEGYR_AUTO_REPAIR_ENABLED:-true}
-      SEGYR_AUTO_REPAIR_MODE: ${SEGYR_AUTO_REPAIR_MODE:-run}
-      AUTO_REPAIR_ENABLED: ${AUTO_REPAIR_ENABLED:-true}
-      AUTO_REPAIR_MODE: ${AUTO_REPAIR_MODE:-run}
-      SEGYR_DEBUG: "false"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      ollama:
-        condition: service_healthy
-    command: ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2", "--proxy-headers"]
-    ports:
-      - "8200:8000"
-    volumes:
-      - logs_data:/app/logs
-      - workspace_data:/app/workspace
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
-    restart: unless-stopped
-    init: true
-    networks:
-      - backend
-      - llm
-
-  alerting:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    env_file:
-      - .env
-    environment:
-      SEGYR_DB_PASSWORD: ${SEGYR_DB_PASSWORD:?SEGYR_DB_PASSWORD is required}
-      SEGYR_JWT_SECRET: ${SEGYR_JWT_SECRET:?SEGYR_JWT_SECRET is required}
-      SEGYR_REDIS_URL: ${SEGYR_REDIS_URL:-redis://redis:6379/0}
-      REDIS_URL: ${SEGYR_REDIS_URL:-redis://redis:6379/0}
-      SEGYR_LOG_LEVEL: ${SEGYR_LOG_LEVEL:-INFO}
-      SEGYR_AUTO_REPAIR_ENABLED: ${SEGYR_AUTO_REPAIR_ENABLED:-true}
-      SEGYR_AUTO_REPAIR_MODE: ${SEGYR_AUTO_REPAIR_MODE:-run}
-      AUTO_REPAIR_ENABLED: ${AUTO_REPAIR_ENABLED:-true}
-      AUTO_REPAIR_MODE: ${AUTO_REPAIR_MODE:-run}
-      SEGYR_DEBUG: "false"
-    depends_on:
-      api:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      segyr-gateway:
-        condition: service_started
-    command:
-      [
-        "python",
-        "-m",
-        "core.monitoring.alerting",
-        "--base-url",
-        "http://api:8000",
-        "--path",
-        "/health/full",
-        "--poll-interval",
-        "${SEGYR_ALERT_POLL_INTERVAL:-30}",
-        "--cooldown",
-        "${SEGYR_ALERT_COOLDOWN_SECONDS:-300}",
-        "--auto-repair-base-url",
-        "http://segyr-gateway:8090",
-        "--auto-repair-min-score",
-        "${SEGYR_ALERT_AUTO_REPAIR_MIN_SCORE:-70}",
-        "--audit-history-path",
-        "logs/repair_audit.jsonl",
-      ]
-    volumes:
-      - logs_data:/app/logs
-      - workspace_data:/app/workspace
-    restart: unless-stopped
-    init: true
-    networks:
-      - backend
-
-  worker:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    env_file:
-      - .env
-    environment:
-      SEGYR_DB_HOST: postgres
-      SEGYR_DB_PORT: 5432
-      SEGYR_DB_NAME: ${SEGYR_DB_NAME:-segyrbot}
-      SEGYR_DB_USER: ${SEGYR_DB_USER:-segyr}
-      SEGYR_DB_PASSWORD: ${SEGYR_DB_PASSWORD:?SEGYR_DB_PASSWORD is required}
-      SEGYR_LLM_PROVIDER: ${SEGYR_LLM_PROVIDER:-litellm}
-      SEGYR_LLM_MODEL: ${SEGYR_LLM_MODEL:-ollama/qwen3.5:9b}
-      SEGYR_LLM_FALLBACK_MODEL: ${SEGYR_LLM_FALLBACK_MODEL:-ollama/qwen3.5:4b}
-      SEGYR_LLM_API_BASE: ${SEGYR_LLM_API_BASE:-http://ollama:11434}
-      SEGYR_LLM_TIMEOUT: ${SEGYR_LLM_TIMEOUT:-120}
-      SEGYR_LLM_RETRY_ATTEMPTS: ${SEGYR_LLM_RETRY_ATTEMPTS:-2}
-      SEGYR_REDIS_URL: ${SEGYR_REDIS_URL:-redis://redis:6379/0}
-      REDIS_URL: ${SEGYR_REDIS_URL:-redis://redis:6379/0}
-      SEGYR_JWT_SECRET: ${SEGYR_JWT_SECRET:?SEGYR_JWT_SECRET is required}
-      SEGYR_LOG_LEVEL: ${SEGYR_LOG_LEVEL:-INFO}
-      SEGYR_DEBUG: "false"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      ollama:
-        condition: service_healthy
-    command: ["python", "-m", "modules.worker.worker"]
-    volumes:
-      - logs_data:/app/logs
-      - workspace_data:/app/workspace
-    restart: unless-stopped
-    init: true
-    networks:
-      - backend
-      - llm
-
-  segyr-gateway:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    env_file:
-      - .env
-    environment:
-      SEGYR_DB_HOST: postgres
-      SEGYR_DB_PORT: 5432
-      SEGYR_DB_NAME: ${SEGYR_DB_NAME:-segyrbot}
-      SEGYR_DB_USER: ${SEGYR_DB_USER:-segyr}
-      SEGYR_DB_PASSWORD: ${SEGYR_DB_PASSWORD:?SEGYR_DB_PASSWORD is required}
-      SEGYR_REDIS_URL: ${SEGYR_REDIS_URL:-redis://redis:6379/0}
-      REDIS_URL: ${SEGYR_REDIS_URL:-redis://redis:6379/0}
-      SEGYR_LLM_PROVIDER: ${SEGYR_LLM_PROVIDER:-litellm}
-      SEGYR_LLM_MODEL: ${SEGYR_LLM_MODEL:-ollama/qwen3.5:9b}
-      SEGYR_LLM_FALLBACK_MODEL: ${SEGYR_LLM_FALLBACK_MODEL:-ollama/qwen3.5:4b}
-      SEGYR_LLM_API_BASE: ${SEGYR_LLM_API_BASE:-http://ollama:11434}
-      SEGYR_LLM_TIMEOUT: ${SEGYR_LLM_TIMEOUT:-120}
-      SEGYR_LLM_RETRY_ATTEMPTS: ${SEGYR_LLM_RETRY_ATTEMPTS:-2}
-      SEGYR_TELEGRAM_BOT_TOKEN: ${SEGYR_TELEGRAM_BOT_TOKEN:-}
-      SEGYR_LOG_LEVEL: ${SEGYR_LOG_LEVEL:-INFO}
-      SEGYR_DEBUG: "false"
-    depends_on:
-      api:
-        condition: service_started
-      redis:
-        condition: service_healthy
-    command: ["python", "-m", "segyr_bot.gateway"]
-    ports:
-      - "8090:8090"
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/readiness', timeout=3)"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    volumes:
-      - logs_data:/app/logs
-      - workspace_data:/app/workspace
-    restart: unless-stopped
-    init: true
-    networks:
-      - backend
-      - llm
-
-  evolution-api:
-    image: atendai/evolution-api:latest
-    profiles: ["whatsapp"]
-    restart: unless-stopped
-    ports:
-      - "8085:8080"
-    networks:
-      - backend
-
-volumes:
-  pgdata:
-  redisdata:
-  ollama_data:
-  logs_data:
-  workspace_data:
+      - segyr-net
 
 networks:
-  backend:
-    driver: bridge
-  llm:
-    driver: bridge
-
-# --- Minimal observability stack ---
-
   segyr-net:
     driver: bridge
