@@ -32,8 +32,6 @@ jobs:
       SEGYR_LLM_API_BASE: "http://127.0.0.1:11434"
       SEGYR_AUTO_REPAIR_ENABLED: "true"
       SEGYR_AUTO_REPAIR_MODE: "run"
-      AUTO_REPAIR_ENABLED: "true"
-      AUTO_REPAIR_MODE: "run"
 
     steps:
       - name: Checkout
@@ -71,11 +69,10 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Mock LLM endpoint for deterministic CI runs (no external network).
+          # Mock LLM
           python - <<'PY' > mock_llm.log 2>&1 &
           import json
           from http.server import BaseHTTPRequestHandler, HTTPServer
-
 
           class Handler(BaseHTTPRequestHandler):
               def _send(self, payload):
@@ -87,55 +84,21 @@ jobs:
                   self.wfile.write(data)
 
               def do_GET(self):
-                  if self.path.endswith("/api/tags"):
-                      self._send({"models": [{"name": "mock"}]})
-                  else:
-                      self._send({"status": "ok"})
+                  self._send({"models": [{"name": "mock"}]})
 
               def do_POST(self):
-                  length = int(self.headers.get("Content-Length", "0"))
-                  if length:
-                      _ = self.rfile.read(length)
-
-                  if self.path.endswith("/v1/chat/completions") or self.path.endswith("/chat/completions"):
-                      self._send(
-                          {
-                              "id": "chatcmpl-mock",
-                              "object": "chat.completion",
-                              "choices": [
-                                  {
-                                      "index": 0,
-                                      "message": {"role": "assistant", "content": "Paris"},
-                                      "finish_reason": "stop",
-                                  }
-                              ],
-                              "usage": {
-                                  "prompt_tokens": 10,
-                                  "completion_tokens": 2,
-                                  "total_tokens": 12,
-                              },
-                          }
-                      )
-                  else:
-                      self._send(
-                          {
-                              "model": "mock",
-                              "created_at": "2026-01-01T00:00:00Z",
-                              "message": {"role": "assistant", "content": "Paris"},
-                              "done": True,
-                              "done_reason": "stop",
-                          }
-                      )
+                  self._send({
+                      "choices": [{"message": {"content": "Paris"}}]
+                  })
 
               def log_message(self, fmt, *args):
                   return
-
 
           HTTPServer(("127.0.0.1", 11434), Handler).serve_forever()
           PY
           MOCK_LLM_PID=$!
 
-          # Start gateway used by run_redis_e2e.py (/health + /message on :8090).
+          # Start gateway
           python -m segyr_bot.gateway > gateway.log 2>&1 &
           GATEWAY_PID=$!
 
@@ -143,10 +106,6 @@ jobs:
             kill "$GATEWAY_PID" "$MOCK_LLM_PID" >/dev/null 2>&1 || true
           }
           trap cleanup EXIT
-
-          docker compose ps || true
-          docker compose logs segyr-gateway --tail=100 || true
-          ss -tuln | grep 8090 || echo "PORT 8090 NOT OPEN"
 
           echo "Waiting for gateway..."
           for i in {1..30}; do
@@ -156,36 +115,27 @@ jobs:
             fi
             sleep 2
           done
-          curl -fsS "http://localhost:8090/health" >/dev/null
 
-          set +e
+          curl -fsS "http://localhost:8090/health"
+
+          echo "=== Gateway logs ==="
+          tail -n 100 gateway.log || true
+
           python run_redis_e2e.py \
             --base-url "http://127.0.0.1:8090" \
             --settle-seconds 3 \
             --timeout 30 \
             --queue-wait-seconds 8 \
             --no-export > e2e_result.json
-          E2E_EXIT=$?
-          set -e
 
           python - <<'PY'
           import json
-          from pathlib import Path
-
-          p = Path("e2e_result.json")
-          if not p.exists() or not p.read_text(encoding="utf-8").strip():
-              raise SystemExit("run_redis_e2e.py n'a produit aucun JSON")
-
-          data = json.loads(p.read_text(encoding="utf-8"))
-          score = int(data.get("score", 0) or 0)
-          status = data.get("status", "unknown")
-
-          print(f"E2E status={status} score={score}")
+          data = json.load(open("e2e_result.json"))
+          score = int(data.get("score", 0))
+          print(f"E2E score={score}")
           if score < 80:
-              raise SystemExit(f"E2E score trop faible: {score} < 80")
+              raise SystemExit(f"Score trop faible: {score}")
           PY
-
-          echo "run_redis_e2e.py exit code: ${E2E_EXIT}"
 
   docker-build-and-smoke:
     runs-on: ubuntu-latest
@@ -198,34 +148,25 @@ jobs:
       - name: Build Docker image
         run: docker build -t segyr-bot:ci .
 
-      - name: Smoke test container /health
-        shell: bash
+      - name: Run container
         run: |
-          set -euo pipefail
-
           docker run -d --name segyr-api-ci \
-            -p 8000:8000 \
-            -e SEGYR_DB_PASSWORD=ci-db-password-strong \
-            -e SEGYR_JWT_SECRET=ci-jwt-secret-strong-32chars \
-            -e SEGYR_API_AUTH_TOKEN=ci-api-token-strong \
-            -e SEGYR_DB_HOST=127.0.0.1 \
-            -e SEGYR_DB_PORT=5432 \
-            -e SEGYR_DB_NAME=segyrbot \
-            -e SEGYR_DB_USER=segyr \
+            -p 8090:8090 \
+            -e SEGYR_DB_PASSWORD=ci-db-password \
+            -e SEGYR_JWT_SECRET=ci-jwt-secret \
+            -e SEGYR_API_AUTH_TOKEN=ci-api-token \
             -e SEGYR_REDIS_URL=redis://127.0.0.1:6379/0 \
             segyr-bot:ci
 
-          cleanup() {
-            docker logs segyr-api-ci >/tmp/segyr-api.log 2>&1 || true
-            docker rm -f segyr-api-ci >/dev/null 2>&1 || true
-          }
-          trap cleanup EXIT
-
+      - name: Wait for API
+        run: |
           for i in {1..60}; do
-            if curl -fsS "http://127.0.0.1:8000/health" >/dev/null; then
-              break
+            if curl -fsS "http://127.0.0.1:8090/health" >/dev/null; then
+              echo "API ready"
+              exit 0
             fi
             sleep 1
           done
-
-          curl -fsS "http://127.0.0.1:8000/health"
+          echo "API failed"
+          docker logs segyr-api-ci
+          exit 1

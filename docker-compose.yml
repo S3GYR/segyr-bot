@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   backend:
     build:
@@ -12,19 +10,19 @@ services:
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
       NVIDIA_DRIVER_CAPABILITIES: ${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
-    runtime: nvidia
-    devices:
-      - /dev/nvidia0:/dev/nvidia0
-      - /dev/nvidiactl:/dev/nvidiactl
-      - /dev/nvidia-uvm:/dev/nvidia-uvm
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
     depends_on:
       - redis
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://127.0.0.1:8090/health"]
-      interval: 30s
+      test: ["CMD", "curl", "-f", "http://localhost:8090/health"]
+      interval: 20s
       timeout: 5s
-      retries: 3
+      retries: 5
     networks:
       - segyr-net
 
@@ -36,12 +34,14 @@ services:
     ports:
       - "3200:80"
     restart: unless-stopped
+    depends_on:
+      - backend
     networks:
       - segyr-net
 
   redis:
     image: redis:7-alpine
-    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1000", "--protected-mode", "no"]
+    command: ["redis-server", "--appendonly", "yes"]
     restart: unless-stopped
     networks:
       - segyr-net
