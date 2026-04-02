@@ -580,9 +580,21 @@ async def _metrics_middleware(request: Request, call_next):
 
 @app.get("/health")
 async def health() -> dict[str, str]:
+    # Variante simple (toujours 200, aucune dépendance fragile)
+    return {"status": "ok"}
+
+
+@app.get("/health/advanced")
+async def health_advanced() -> dict[str, str]:
+    # Variante avancée (toujours 200) exposant l'état runtime si disponible
+    state = "unknown"
+    try:
+        state = getattr(runtime, "_runtime_state", "unknown") or "unknown"
+    except Exception:
+        state = "unknown"
     return {
         "status": "ok",
-        "runtime": runtime._runtime_state,
+        "runtime": state,
     }
 
 async def publish_log(entry: dict[str, Any]) -> None:
