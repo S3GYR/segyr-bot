@@ -8,6 +8,7 @@ import hmac
 import hashlib
 import time
 import uuid
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -247,16 +248,22 @@ class GatewayRuntime:
         self.agent: AgentLoop | None = None
         self.agent_task: asyncio.Task | None = None
         self.outbound_task: asyncio.Task | None = None
+        self.watchdog_task: asyncio.Task | None = None
         self.response_timeout_s = 20.0
         self.allow_from: set[str] = {"*"}
         self._pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._pending_lock = asyncio.Lock()
+        self.runtime_ready = False
+        self._runtime_state = "stopped"
 
     async def start(self) -> None:
-        try:
-            if self.started:
-                return
+        if self.started:
+            return
 
+        self.runtime_ready = False
+        self._runtime_state = "starting"
+
+        try:
             settings = _get_settings()
             workspace_path = Path(settings.workspace)
             config_path = self.channels_config_path or _default_channels_config_path()
@@ -295,36 +302,53 @@ class GatewayRuntime:
                 restrict_to_workspace=settings.agent.restrict_to_workspace,
             )
 
-            self.agent_task = asyncio.create_task(self.agent.run(), name="gateway-agent-loop")
-            self.outbound_task = asyncio.create_task(self._dispatch_outbound(), name="gateway-outbound-dispatcher")
-            self.watchdog_task = asyncio.create_task(self._watchdog_tasks(), name="gateway-watchdog")
+            if hasattr(self.agent, "run"):
+                self.agent_task = asyncio.create_task(self.agent.run(), name="gateway-agent-loop")
+            if hasattr(self, "_dispatch_outbound"):
+                self.outbound_task = asyncio.create_task(self._dispatch_outbound(), name="gateway-outbound-dispatcher")
+            if hasattr(self, "_watchdog_tasks"):
+                self.watchdog_task = asyncio.create_task(self._watchdog_tasks(), name="gateway-watchdog")
+
             self.started = True
+            self.runtime_ready = True
+            self._runtime_state = "ready"
             logger.info("Gateway started (FastAPI) host=0.0.0.0 port=8090")
             print("✅ Runtime started")
         except Exception as e:
             print(f"❌ Runtime failed: {e}")
             self.started = False
+            self.runtime_ready = False
+            self._runtime_state = "degraded"
             logger.error("Runtime start failed: {}", e)
+            for task in (self.agent_task, self.outbound_task, self.watchdog_task):
+                try:
+                    if task and not task.done():
+                        task.cancel()
+                except Exception:
+                    pass
+            if any(t for t in (self.agent_task, self.outbound_task, self.watchdog_task) if t):
+                await asyncio.gather(
+                    *[t for t in (self.agent_task, self.outbound_task, self.watchdog_task) if t],
+                    return_exceptions=True,
+                )
 
     async def stop(self) -> None:
         if not self.started:
             return
 
         self.started = False
+        self.runtime_ready = False
+        self._runtime_state = "stopped"
 
         if self.agent is not None:
             self.agent.stop()
 
-        tasks = [t for t in (self.agent_task, self.outbound_task) if t is not None]
+        tasks = [t for t in (self.agent_task, self.outbound_task, self.watchdog_task) if t is not None]
         for task in tasks:
             if not task.done():
                 task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
-
-        if hasattr(self, "watchdog_task") and self.watchdog_task is not None and not self.watchdog_task.done():
-            self.watchdog_task.cancel()
-            await asyncio.gather(self.watchdog_task, return_exceptions=True)
 
         async with self._pending_lock:
             for fut in self._pending.values():
@@ -377,7 +401,7 @@ class GatewayRuntime:
 
                 try:
                     logger.debug(
-                        "Outbound prêt channel={} chat_id={} preview={}",
+                        "Outbound prêt channel={} chat_id={} preview= {}",
                         getattr(msg, "channel", "?"),
                         getattr(msg, "chat_id", "?"),
                         (msg.content[:160] + "…") if isinstance(getattr(msg, "content", None), str) else str(getattr(msg, "content", "")),
@@ -396,10 +420,45 @@ class GatewayRuntime:
         finally:
             logger.info("Outbound dispatcher arrêté")
 
+    async def _watchdog_tasks(self) -> None:
+        """Surveille les tâches de fond et loggue les crashs sans jamais casser."""
+        try:
+            while self.started:
+                for name, task in (
+                    ("agent", self.agent_task),
+                    ("outbound", self.outbound_task),
+                ):
+                    if task is None:
+                        continue
+                    if task.cancelled():
+                        logger.info("Watchdog: task={} cancelled", name)
+                        continue
+                    if task.done():
+                        try:
+                            exc = task.exception()
+                        except asyncio.CancelledError:
+                            continue
+                        except Exception as err:
+                            logger.warning("Watchdog: task={} exception read failed err={}", name, err)
+                            continue
+                        if exc:
+                            logger.error("Watchdog: task={} crashed: {}", name, exc)
+                        else:
+                            logger.info("Watchdog: task={} completed", name)
+                await asyncio.sleep(1.0)
+        except asyncio.CancelledError:
+            logger.info("Watchdog annulé")
+            raise
+        except Exception as exc:
+            logger.error("Watchdog crash: {}", exc)
+        finally:
+            logger.info("Watchdog arrêté")
 
-def _sanitize_payload(text: str) -> str:
-    return text.replace("\r", "\\r").replace("\n", "\\n")
+    async def _lifespan_start(self) -> None:
+        await self.start()
 
+    async def _lifespan_shutdown(self) -> None:
+        await self.stop()
 
 async def _safe_send(ws: WebSocket, text: str) -> bool:
     if len(text.encode("utf-8")) > _WS_MAX_SIZE:
@@ -442,7 +501,24 @@ def _allow_ip(ws: WebSocket) -> bool:
     return True
 
 runtime = GatewayRuntime()
-app = FastAPI(title="SEGYR Gateway", version="1.0.0")
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    try:
+        await runtime.start()
+    except Exception as exc:
+        logger.error("runtime start failed (lifespan): {}", exc)
+    try:
+        yield
+    finally:
+        try:
+            await runtime.stop()
+        except Exception as exc:
+            logger.error("runtime stop failed (lifespan): {}", exc)
+
+
+app = FastAPI(title="SEGYR Gateway", version="1.0.0", lifespan=_lifespan)
 
 allow_all = "*" in _WS_ALLOWED_ORIGINS
 origins_list = ["*"] if allow_all else sorted(_WS_ALLOWED_ORIGINS)
@@ -502,33 +578,12 @@ async def _metrics_middleware(request: Request, call_next):
         _metrics["latencies_ms"] = _metrics["latencies_ms"][-500:]
     return response
 
-@app.on_event("startup")
-async def _on_startup() -> None:
-    global _startup_task
-    logger.info("startup event triggered")
-
-    async def safe_start() -> None:
-        try:
-            await runtime.start()
-        except Exception as e:
-            logger.error("runtime.start failed: {}", e)
-
-    _startup_task = asyncio.create_task(safe_start())
-
-@app.on_event("shutdown")
-async def _on_shutdown() -> None:
-    global _startup_task
-    try:
-        if _startup_task is not None and not _startup_task.done():
-            _startup_task.cancel()
-            await asyncio.gather(_startup_task, return_exceptions=True)
-        await runtime.stop()
-    except Exception as e:
-        logger.error("shutdown failed: {}", e)
-
 @app.get("/health")
 async def health() -> dict[str, str]:
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "runtime": runtime._runtime_state,
+    }
 
 async def publish_log(entry: dict[str, Any]) -> None:
     """Publish JSON log to Redis channel, fail-safe to logger."""
