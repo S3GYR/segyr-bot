@@ -550,21 +550,37 @@ logger.info(
     },
 )
 
+# Metriques HTTP (initialisées avant le middleware pour éviter KeyError/NameError)
+_metrics: dict[str, Any] = {
+    "requests_total": 0,
+    "latencies_ms": [],
+    "rejected_busy": 0,
+}
+
 def _build_pubsub_client() -> Redis:
-    return Redis.from_url(
-        settings.REDIS_URL,
-        decode_responses=True,
-        socket_connect_timeout=1,
-        socket_timeout=1,
-        health_check_interval=10,
-    )
+    try:
+        url = getattr(settings, "REDIS_URL", None) or "redis://localhost:6379"
+        return Redis.from_url(
+            url,
+            decode_responses=True,
+            socket_connect_timeout=1,
+            socket_timeout=1,
+            health_check_interval=10,
+        )
+    except Exception as e:
+        logger.warning("Redis pubsub client init failed: {}", e)
+        return None
 
 _redis_pubsub_client = _build_pubsub_client()
-_rate_limiter = RateLimiter(
-    max_requests=settings.rate_limit_max_requests,
-    window_seconds=settings.rate_limit_window_seconds,
-    prefix="segyr_rl",
-)
+try:
+    _rate_limiter = RateLimiter(
+        max_requests=getattr(settings, "rate_limit_max_requests", 100),
+        window_seconds=getattr(settings, "rate_limit_window_seconds", 60),
+        prefix="segyr_rl",
+    )
+except Exception as e:
+    logger.warning("RateLimiter init failed: {}", e)
+    _rate_limiter = None
 
 @app.middleware("http")
 async def _metrics_middleware(request: Request, call_next):
@@ -580,22 +596,23 @@ async def _metrics_middleware(request: Request, call_next):
 
 @app.get("/health")
 async def health() -> dict[str, str]:
-    # Variante simple (toujours 200, aucune dépendance fragile)
-    return {"status": "ok"}
+    # Toujours 200: ne dépend pas d'objets fragiles, encapsule toute exception.
+    try:
+        return {"status": "ok"}  # Chemin nominal: aucune info interne requise.
+    except Exception as exc:  # Catch-all de sécurité pour éviter toute propagation.
+        return {"status": "degraded", "detail": str(exc)}
 
 
 @app.get("/health/advanced")
 async def health_advanced() -> dict[str, str]:
-    # Variante avancée (toujours 200) exposant l'état runtime si disponible
+    # Variante avancée (toujours 200) exposant un état runtime best-effort.
     state = "unknown"
     try:
-        state = getattr(runtime, "_runtime_state", "unknown") or "unknown"
-    except Exception:
-        state = "unknown"
-    return {
-        "status": "ok",
-        "runtime": state,
-    }
+        state = getattr(runtime, "_runtime_state", "unknown") or "unknown"  # Lecture best-effort.
+        return {"status": "ok", "runtime": state}
+    except Exception as exc:
+        # En cas d'erreur d'accès, on reste 200 mais en mode dégradé.
+        return {"status": "degraded", "detail": str(exc)}
 
 async def publish_log(entry: dict[str, Any]) -> None:
     """Publish JSON log to Redis channel, fail-safe to logger."""
@@ -1032,10 +1049,11 @@ async def message(request: Request) -> dict[str, Any]:
         logger.warning("backpressure: inbound queue full identity={} depth={}/{}", identity, runtime.bus.inbound_size, runtime.bus.inbound_max)
         raise HTTPException(status_code=429, detail="gateway busy")
 
-    allowed = await _rate_limiter.allow(identity)
-    if not allowed:
-        logger.warning("rate limit hit identity={}", identity)
-        raise HTTPException(status_code=429, detail="rate limit exceeded")
+    if _rate_limiter is not None:
+        allowed = await _rate_limiter.allow(identity)
+        if not allowed:
+            logger.warning("rate limit hit identity={}", identity)
+            raise HTTPException(status_code=429, detail="rate limit exceeded")
 
     mode_header = request.headers.get("X-LLM-Mode")
     mode_payload = str(payload.get("mode") or "").strip().lower()
