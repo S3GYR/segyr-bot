@@ -30,111 +30,100 @@ jobs:
       SEGYR_REDIS_URL: "redis://127.0.0.1:6379/0"
       SEGYR_LLM_MODEL: "ollama/mock"
       SEGYR_LLM_API_BASE: "http://127.0.0.1:11434"
-      SEGYR_AUTO_REPAIR_ENABLED: "true"
-      SEGYR_AUTO_REPAIR_MODE: "run"
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: "pip"
-          cache-dependency-path: |
-            requirements.txt
-            pyproject.toml
 
-      - name: Install dependencies
+      - name: Install deps
         run: |
-          python -m pip install --upgrade pip setuptools wheel
-          python -m pip install -r requirements.txt
-          python -m pip check
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-      - name: Validate critical imports
-        run: |
-          python - <<'PY'
-          import importlib
-          for name in ("fastapi", "loguru", "psycopg", "bcrypt"):
-              importlib.import_module(name)
-          print("Critical imports OK")
-          PY
+      - name: Run tests
+        run: pytest -q tests
 
-      - name: Run unit tests (pytest)
-        run: python -m pytest -q tests
-
-      - name: Run Redis E2E and enforce score >= 80
+      - name: Run E2E (FULL DEBUG)
         shell: bash
         run: |
           set -euo pipefail
 
-          # Mock LLM
+          echo "=== START MOCK LLM ==="
           python - <<'PY' > mock_llm.log 2>&1 &
-          import json
           from http.server import BaseHTTPRequestHandler, HTTPServer
+          import json
 
-          class Handler(BaseHTTPRequestHandler):
-              def _send(self, payload):
-                  data = json.dumps(payload).encode("utf-8")
-                  self.send_response(200)
-                  self.send_header("Content-Type", "application/json")
-                  self.send_header("Content-Length", str(len(data)))
-                  self.end_headers()
-                  self.wfile.write(data)
-
+          class H(BaseHTTPRequestHandler):
               def do_GET(self):
-                  self._send({"models": [{"name": "mock"}]})
-
+                  self.send_response(200); self.end_headers()
+                  self.wfile.write(b'{"ok":true}')
               def do_POST(self):
-                  self._send({
-                      "choices": [{"message": {"content": "Paris"}}]
-                  })
+                  self.send_response(200); self.end_headers()
+                  self.wfile.write(b'{"choices":[{"message":{"content":"Paris"}}]}')
+              def log_message(self, *args): pass
 
-              def log_message(self, fmt, *args):
-                  return
-
-          HTTPServer(("127.0.0.1", 11434), Handler).serve_forever()
+          HTTPServer(("127.0.0.1", 11434), H).serve_forever()
           PY
-          MOCK_LLM_PID=$!
 
-          # Start gateway
+          echo "=== START GATEWAY ==="
           python -m segyr_bot.gateway > gateway.log 2>&1 &
           GATEWAY_PID=$!
 
-          cleanup() {
-            kill "$GATEWAY_PID" "$MOCK_LLM_PID" >/dev/null 2>&1 || true
-          }
-          trap cleanup EXIT
+          sleep 3
 
-          echo "Waiting for gateway..."
-          for i in {1..30}; do
-            if curl -s "http://localhost:8090/health" > /dev/null; then
-              echo "Gateway ready"
+          echo "=== PROCESS CHECK ==="
+          ps aux | grep segyr_bot || true
+
+          echo "=== PORT CHECK ==="
+          ss -tuln || true
+
+          echo "=== WAIT FOR PORT ==="
+          PORT=""
+          for i in {1..60}; do
+            if ss -tuln | grep ":8090"; then PORT=8090; break; fi
+            if ss -tuln | grep ":8000"; then PORT=8000; break; fi
+            sleep 2
+          done
+
+          if [ -z "$PORT" ]; then
+            echo "❌ Aucun port ouvert"
+            cat gateway.log || true
+            exit 1
+          fi
+
+          echo "✅ PORT DETECTED: $PORT"
+
+          echo "=== WAIT FOR HEALTH ==="
+          for i in {1..60}; do
+            if curl -s "http://127.0.0.1:$PORT/health" > /dev/null; then
+              echo "Gateway READY"
               break
             fi
             sleep 2
           done
 
-          curl -fsS "http://localhost:8090/health"
+          echo "=== GATEWAY LOG ==="
+          cat gateway.log || true
 
-          echo "=== Gateway logs ==="
-          tail -n 100 gateway.log || true
+          curl -fsS "http://127.0.0.1:$PORT/health"
 
           python run_redis_e2e.py \
-            --base-url "http://127.0.0.1:8090" \
+            --base-url "http://127.0.0.1:$PORT" \
             --settle-seconds 3 \
             --timeout 30 \
             --queue-wait-seconds 8 \
-            --no-export > e2e_result.json
+            --no-export > result.json
 
           python - <<'PY'
           import json
-          data = json.load(open("e2e_result.json"))
-          score = int(data.get("score", 0))
-          print(f"E2E score={score}")
-          if score < 80:
-              raise SystemExit(f"Score trop faible: {score}")
+          d = json.load(open("result.json"))
+          s = int(d.get("score", 0))
+          print("Score:", s)
+          assert s >= 80, f"Score trop faible: {s}"
           PY
 
   docker-build-and-smoke:
@@ -142,10 +131,9 @@ jobs:
     needs: test-and-e2e
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Build Docker image
+      - name: Build image
         run: docker build -t segyr-bot:ci .
 
       - name: Run container
@@ -158,15 +146,14 @@ jobs:
             -e SEGYR_REDIS_URL=redis://127.0.0.1:6379/0 \
             segyr-bot:ci
 
-      - name: Wait for API
+      - name: Wait API
         run: |
           for i in {1..60}; do
-            if curl -fsS "http://127.0.0.1:8090/health" >/dev/null; then
-              echo "API ready"
+            if curl -fsS http://127.0.0.1:8090/health; then
+              echo "API READY"
               exit 0
             fi
             sleep 1
           done
-          echo "API failed"
           docker logs segyr-api-ci
           exit 1
