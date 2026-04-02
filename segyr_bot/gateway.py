@@ -8,6 +8,7 @@ import hmac
 import hashlib
 import time
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 import os
@@ -69,12 +70,93 @@ def _get_settings():
     return settings
 
 
-def _parse_ws_allowed_origins(raw: str | None) -> set[str]:
-    if not raw:
-        return {"*"}
+def _parse_ws_allowed_origins(raw: str | None) -> frozenset[str]:
+    if raw is None:
+        return frozenset({"*"})
     items = [o.strip() for o in str(raw).split(",")]
-    cleaned = {o for o in items if o}
-    return cleaned or {"*"}
+    cleaned = [o for o in items if o]
+    if not cleaned:
+        return frozenset({"*"})
+    if "*" in cleaned:
+        return frozenset({"*"})
+    return frozenset(cleaned)
+
+
+@dataclass(frozen=True)
+class GatewayConfig:
+    allowed_origins: frozenset[str]
+    ws_token: str
+    max_ws_connections: int
+    ws_max_size: int
+    ws_ping_interval: float
+    pubsub_max_bytes: int
+    pubsub_queue_max: int
+    max_ws_per_ip: int
+    max_ws_per_min_ip: int
+
+
+def _load_gateway_config() -> GatewayConfig:
+    cfg = _get_settings()
+    origins = _parse_ws_allowed_origins(getattr(cfg, "ws_allowed_origins", "*"))
+    token = (getattr(cfg, "ws_token", None) or "").strip()
+    return GatewayConfig(
+        allowed_origins=origins,
+        ws_token=token,
+        max_ws_connections=int(os.getenv("MAX_WS_CONNECTIONS", "0")),
+        ws_max_size=int(os.getenv("WS_MAX_SIZE", "16777216")),
+        ws_ping_interval=float(os.getenv("WS_PING_INTERVAL", "15")),
+        pubsub_max_bytes=int(os.getenv("PUBSUB_MAX_BYTES", "65536")),
+        pubsub_queue_max=int(os.getenv("PUBSUB_QUEUE_MAX", "1000")),
+        max_ws_per_ip=int(os.getenv("MAX_WS_PER_IP", "0")),
+        max_ws_per_min_ip=int(os.getenv("MAX_WS_PER_MIN_IP", "0")),
+    )
+
+
+def _validate_gateway_config(config: GatewayConfig) -> None:
+    if not isinstance(config.allowed_origins, frozenset) or not config.allowed_origins:
+        raise ValueError("WS_ALLOWED_ORIGINS invalide ou vide")
+    if any(not isinstance(o, str) for o in config.allowed_origins):
+        raise ValueError("WS_ALLOWED_ORIGINS doit être une collection de chaînes")
+    if config.ws_max_size <= 0:
+        raise ValueError("WS_MAX_SIZE doit être > 0")
+    if config.ws_ping_interval <= 0:
+        raise ValueError("WS_PING_INTERVAL doit être > 0")
+    if config.pubsub_max_bytes <= 0:
+        raise ValueError("PUBSUB_MAX_BYTES doit être > 0")
+    if config.pubsub_queue_max <= 0:
+        raise ValueError("PUBSUB_QUEUE_MAX doit être > 0")
+    if config.max_ws_connections < 0:
+        raise ValueError("MAX_WS_CONNECTIONS doit être >= 0")
+    if config.max_ws_per_ip < 0 or config.max_ws_per_min_ip < 0:
+        raise ValueError("MAX_WS_PER_IP et MAX_WS_PER_MIN_IP doivent être >= 0")
+
+
+# ---------------------------------------------------------------------------
+# Configuration globale (définie une seule fois avant usage)
+# ---------------------------------------------------------------------------
+_GATEWAY_CONFIG = _load_gateway_config()
+_validate_gateway_config(_GATEWAY_CONFIG)
+
+_WS_ALLOWED_ORIGINS = _GATEWAY_CONFIG.allowed_origins
+_WS_TOKEN = _GATEWAY_CONFIG.ws_token
+_MAX_WS_CONNECTIONS = _GATEWAY_CONFIG.max_ws_connections  # 0 = illimité
+_WS_MAX_SIZE = _GATEWAY_CONFIG.ws_max_size
+_WS_PING_INTERVAL = _GATEWAY_CONFIG.ws_ping_interval
+_PUBSUB_MAX_BYTES = _GATEWAY_CONFIG.pubsub_max_bytes
+_PUBSUB_QUEUE_MAX = _GATEWAY_CONFIG.pubsub_queue_max
+_PUBSUB_STATS: dict[str, float | int] = {
+    "delivered": 0,
+    "last_lag_ms": 0.0,
+    "dropped": 0,
+    "dropped_oversize": 0,
+    "published": 0,
+}
+_MAX_WS_PER_IP = _GATEWAY_CONFIG.max_ws_per_ip  # 0 illimité
+_MAX_WS_PER_MIN_IP = _GATEWAY_CONFIG.max_ws_per_min_ip  # 0 illimité
+_ip_conn: dict[str, int] = {}
+_ip_recent: dict[str, list[float]] = {}
+_ip_rejected: dict[str, int] = {}
+_conn_counters: dict[str, int] = {"active": 0, "accepted": 0, "rejected": 0, "messages_sent": 0, "rejected_ip": 0}
 
 
 def _default_channels_config_path() -> Path:
@@ -303,53 +385,38 @@ def _allow_ip(ws: WebSocket) -> bool:
     _ip_conn[ip] = _ip_conn.get(ip, 0) + 1
     return True
 
-
-def _release_ip(ws: WebSocket) -> None:
-    ip = _client_ip(ws)
-    if ip in _ip_conn:
-        _ip_conn[ip] = max(0, _ip_conn[ip] - 1)
-
-
 runtime = GatewayRuntime()
 app = FastAPI(title="SEGYR Gateway", version="1.0.0")
 
-if _WS_ALLOWED_ORIGINS:
-    allow_all = "*" in _WS_ALLOWED_ORIGINS
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"] if allow_all else list(_WS_ALLOWED_ORIGINS),
-        allow_credentials=False if allow_all else True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-    logger.info(
-        "CORS configured origins={} allow_credentials={}",
-        "*" if allow_all else list(_WS_ALLOWED_ORIGINS),
-        False if allow_all else True,
-    )
-
-log_requests(app)
-_startup_task: asyncio.Task | None = None
-_metrics: dict[str, Any] = {
-    "requests_total": 0,
-    "latencies_ms": [],
-    "rejected_busy": 0,
-}
-
-_PUBSUB_STATS: dict[str, float | int] = {
-    "delivered": 0,
-    "last_lag_ms": 0.0,
-    "dropped": 0,
-    "dropped_oversize": 0,
-    "published": 0,
-}
-
-_MAX_WS_PER_IP = int(os.getenv("MAX_WS_PER_IP", "0"))  # 0 unlimited
-_MAX_WS_PER_MIN_IP = int(os.getenv("MAX_WS_PER_MIN_IP", "0"))  # per minute, 0 unlimited
-_ip_conn: dict[str, int] = {}
-_ip_recent: dict[str, list[float]] = {}
-_ip_rejected: dict[str, int] = {}
-_conn_counters: dict[str, int] = {"active": 0, "accepted": 0, "rejected": 0, "messages_sent": 0, "rejected_ip": 0}
+allow_all = "*" in _WS_ALLOWED_ORIGINS
+origins_list = ["*"] if allow_all else sorted(_WS_ALLOWED_ORIGINS)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins_list,
+    allow_credentials=False if allow_all else True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+logger.info(
+    "CORS configured",
+    extra={
+        "origins": "*" if allow_all else origins_list,
+        "allow_credentials": False if allow_all else True,
+    },
+)
+logger.info(
+    "Gateway config",
+    extra={
+        "ws_allowed_origins": "*" if allow_all else origins_list,
+        "ws_token_set": bool(_WS_TOKEN),
+        "ws_max_size": _WS_MAX_SIZE,
+        "pubsub_queue_max": _PUBSUB_QUEUE_MAX,
+        "ws_ping_interval": _WS_PING_INTERVAL,
+        "max_ws_conn": _MAX_WS_CONNECTIONS,
+        "max_ws_per_ip": _MAX_WS_PER_IP,
+        "max_ws_per_min_ip": _MAX_WS_PER_MIN_IP,
+    },
+)
 
 def _build_pubsub_client() -> Redis:
     return Redis.from_url(
