@@ -340,6 +340,62 @@ class GatewayRuntime:
         if "*" in self.allow_from:
             return True
 
+    async def _dispatch_outbound(self) -> None:
+        """Boucle de consommation des messages sortants.
+
+        - ne doit pas bloquer l'event loop
+        - tolérante aux erreurs (ne crashe jamais le runtime)
+        - s'arrête proprement si runtime stoppé ou tâche annulée
+        - limite le spin CPU via timeout + yield explicite
+        """
+
+        if self.bus is None:
+            logger.warning("Outbound dispatcher démarre sans bus: stop immédiat")
+            return
+
+        logger.info("Outbound dispatcher démarré")
+        try:
+            while self.started:
+                # Stop rapide si runtime arrêté pendant un timeout
+                if not self.started:
+                    break
+
+                try:
+                    msg: OutboundMessage = await asyncio.wait_for(self.bus.consume_outbound(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    await asyncio.sleep(0.05)
+                    continue
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.error("Erreur consommation outbound: {}", exc)
+                    await asyncio.sleep(0.1)
+                    continue
+
+                if not self.started:
+                    break
+
+                try:
+                    logger.debug(
+                        "Outbound prêt channel={} chat_id={} preview={}",
+                        getattr(msg, "channel", "?"),
+                        getattr(msg, "chat_id", "?"),
+                        (msg.content[:160] + "…") if isinstance(getattr(msg, "content", None), str) else str(getattr(msg, "content", "")),
+                    )
+                    # TODO: router vers un ChannelManager si/when branché
+                except Exception as exc:
+                    logger.warning("Outbound dispatch log failed: {}", exc)
+
+                # Yield pour éviter de monopoliser l'event loop
+                await asyncio.sleep(0)
+        except asyncio.CancelledError:
+            logger.info("Outbound dispatcher annulé")
+            raise
+        except Exception as exc:
+            logger.error("Outbound dispatcher crash: {}", exc)
+        finally:
+            logger.info("Outbound dispatcher arrêté")
+
 
 def _sanitize_payload(text: str) -> str:
     return text.replace("\r", "\\r").replace("\n", "\\n")
