@@ -5,6 +5,7 @@ from asyncio import QueueFull
 import json
 import logging
 import hmac
+import hashlib
 import time
 import uuid
 from pathlib import Path
@@ -44,6 +45,9 @@ except Exception as e:
     class Dummy:
         workspace = "/tmp"
 
+        ws_allowed_origins = "*"
+        ws_token: str | None = None
+
         class llm:
             model = "none"
             provider = "none"
@@ -63,6 +67,14 @@ except Exception as e:
 
 def _get_settings():
     return settings
+
+
+def _parse_ws_allowed_origins(raw: str | None) -> set[str]:
+    if not raw:
+        return {"*"}
+    items = [o.strip() for o in str(raw).split(",")]
+    cleaned = {o for o in items if o}
+    return cleaned or {"*"}
 
 
 def _default_channels_config_path() -> Path:
@@ -302,12 +314,18 @@ runtime = GatewayRuntime()
 app = FastAPI(title="SEGYR Gateway", version="1.0.0")
 
 if _WS_ALLOWED_ORIGINS:
+    allow_all = "*" in _WS_ALLOWED_ORIGINS
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=list(_WS_ALLOWED_ORIGINS),
-        allow_credentials=True,
+        allow_origins=["*"] if allow_all else list(_WS_ALLOWED_ORIGINS),
+        allow_credentials=False if allow_all else True,
         allow_methods=["*"],
-        allow_headers=["*"]
+        allow_headers=["*"],
+    )
+    logger.info(
+        "CORS configured origins={} allow_credentials={}",
+        "*" if allow_all else list(_WS_ALLOWED_ORIGINS),
+        False if allow_all else True,
     )
 
 log_requests(app)
@@ -317,22 +335,21 @@ _metrics: dict[str, Any] = {
     "latencies_ms": [],
     "rejected_busy": 0,
 }
-_LOG_CHANNEL = "logs"
-_conn_counters: dict[str, int] = {"active": 0, "accepted": 0, "rejected": 0, "messages_sent": 0, "rejected_ip": 0}
-_MAX_WS_CONNECTIONS = int(os.getenv("MAX_WS_CONNECTIONS", "0"))  # 0 means unlimited
-_WS_MAX_SIZE = int(os.getenv("WS_MAX_SIZE", "16777216"))  # 16MB default
-_WS_PING_INTERVAL = float(os.getenv("WS_PING_INTERVAL", "15"))
-_PUBSUB_MAX_BYTES = int(os.getenv("PUBSUB_MAX_BYTES", "65536"))
-_PUBSUB_QUEUE_MAX = int(os.getenv("PUBSUB_QUEUE_MAX", "1000"))
-_PUBSUB_STATS: dict[str, float | int] = {"delivered": 0, "last_lag_ms": 0.0, "dropped": 0}
+
+_PUBSUB_STATS: dict[str, float | int] = {
+    "delivered": 0,
+    "last_lag_ms": 0.0,
+    "dropped": 0,
+    "dropped_oversize": 0,
+    "published": 0,
+}
+
 _MAX_WS_PER_IP = int(os.getenv("MAX_WS_PER_IP", "0"))  # 0 unlimited
 _MAX_WS_PER_MIN_IP = int(os.getenv("MAX_WS_PER_MIN_IP", "0"))  # per minute, 0 unlimited
 _ip_conn: dict[str, int] = {}
 _ip_recent: dict[str, list[float]] = {}
 _ip_rejected: dict[str, int] = {}
-_WS_ALLOWED_ORIGINS = {o.strip() for o in os.getenv("WS_ALLOWED_ORIGINS", "*").split(",") if o.strip()}
-_WS_TOKEN = os.getenv("WS_TOKEN", "")
-
+_conn_counters: dict[str, int] = {"active": 0, "accepted": 0, "rejected": 0, "messages_sent": 0, "rejected_ip": 0}
 
 def _build_pubsub_client() -> Redis:
     return Redis.from_url(
@@ -343,14 +360,12 @@ def _build_pubsub_client() -> Redis:
         health_check_interval=10,
     )
 
-
 _redis_pubsub_client = _build_pubsub_client()
 _rate_limiter = RateLimiter(
     max_requests=settings.rate_limit_max_requests,
     window_seconds=settings.rate_limit_window_seconds,
     prefix="segyr_rl",
 )
-
 
 @app.middleware("http")
 async def _metrics_middleware(request: Request, call_next):
@@ -363,7 +378,6 @@ async def _metrics_middleware(request: Request, call_next):
     if len(_metrics["latencies_ms"]) > 500:
         _metrics["latencies_ms"] = _metrics["latencies_ms"][-500:]
     return response
-
 
 @app.on_event("startup")
 async def _on_startup() -> None:
@@ -378,7 +392,6 @@ async def _on_startup() -> None:
 
     _startup_task = asyncio.create_task(safe_start())
 
-
 @app.on_event("shutdown")
 async def _on_shutdown() -> None:
     global _startup_task
@@ -390,11 +403,9 @@ async def _on_shutdown() -> None:
     except Exception as e:
         logger.error("shutdown failed: {}", e)
 
-
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
-
 
 async def publish_log(entry: dict[str, Any]) -> None:
     """Publish JSON log to Redis channel, fail-safe to logger."""
@@ -419,14 +430,12 @@ async def publish_log(entry: dict[str, Any]) -> None:
         else:
             logger.info("log (fallback local): {}", payload)
 
-
 async def _redis_check(timeout: float = 0.5) -> bool:
     try:
         return await asyncio.wait_for(redis_ping(timeout_s=timeout), timeout=timeout + 0.1)
     except Exception as e:
         logger.warning("readiness redis check failed: {}", e)
         return False
-
 
 async def _llm_check(timeout: float = 0.5) -> bool:
     # lightweight probe: resolve provider and perform a cheap noop if supported
@@ -444,13 +453,11 @@ async def _llm_check(timeout: float = 0.5) -> bool:
         logger.warning("readiness llm check failed: {}", e)
         return False
 
-
 @app.get("/readiness")
 async def readiness() -> dict[str, Any]:
     redis_ok, llm_ok = await asyncio.gather(_redis_check(), _llm_check())
     status = "ok" if redis_ok and llm_ok else "degraded"
     return {"status": status, "redis": redis_ok, "llm": llm_ok}
-
 
 async def _live_metrics() -> dict[str, Any]:
     redis_ok, llm_ok = await asyncio.gather(_redis_check(), _llm_check())
@@ -479,6 +486,7 @@ async def _live_metrics() -> dict[str, Any]:
     status = "ok" if redis_ok and llm_ok else "degraded"
     bus_in_depth = runtime.bus.inbound_size if runtime.bus else 0
     bus_in_max = runtime.bus.inbound_max if runtime.bus else 0
+    rejected_ip = _conn_counters.get("rejected_ip", 0)
 
     return {
         "status": status,
@@ -510,7 +518,6 @@ async def _live_metrics() -> dict[str, Any]:
         "pubsub_dropped": _PUBSUB_STATS.get("dropped", 0),
     }
 
-
 async def _handle_client_msg(ws: WebSocket, timeout: float = 2.0) -> bool:
     try:
         msg = await asyncio.wait_for(ws.receive_text(), timeout=timeout)
@@ -535,7 +542,6 @@ async def _handle_client_msg(ws: WebSocket, timeout: float = 2.0) -> bool:
             pass
     return True
 
-
 def _check_origin(ws: WebSocket) -> bool:
     if "*" in _WS_ALLOWED_ORIGINS:
         return True
@@ -545,7 +551,6 @@ def _check_origin(ws: WebSocket) -> bool:
         origin = ""
     return origin in _WS_ALLOWED_ORIGINS
 
-
 def _check_token(ws: WebSocket) -> bool:
     if not _WS_TOKEN:
         return True
@@ -554,7 +559,6 @@ def _check_token(ws: WebSocket) -> bool:
     except Exception:
         token = ""
     return hmac.compare_digest(token, _WS_TOKEN)
-
 
 @app.websocket("/ws/metrics")
 async def ws_metrics(ws: WebSocket) -> None:
@@ -616,7 +620,6 @@ async def ws_metrics(ws: WebSocket) -> None:
         _conn_counters["active"] = max(0, _conn_counters["active"] - 1)
         _release_ip(ws)
 
-
 @app.websocket("/ws/logs")
 async def ws_logs(ws: WebSocket) -> None:
     ip = _client_ip(ws)
@@ -645,11 +648,6 @@ async def ws_logs(ws: WebSocket) -> None:
             if now - last_server_ping >= _WS_PING_INTERVAL:
                 last_server_ping = now
                 await ws.send_text(json.dumps({"type": "server_ping", "ts": now}, ensure_ascii=False))
-
-            # read client message (ping/pong)
-            handled = await _handle_client_msg(ws, timeout=0.1)
-            if handled:
-                last_activity = time.time()
 
             # pubsub message
             msg = await loop.run_in_executor(None, pubsub.get_message, True, 0.01)
@@ -693,7 +691,6 @@ async def ws_logs(ws: WebSocket) -> None:
             pass
         _conn_counters["active"] = max(0, _conn_counters["active"] - 1)
         _release_ip(ws)
-
 
 @app.get("/metrics")
 async def metrics() -> Response:

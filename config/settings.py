@@ -132,6 +132,8 @@ class Settings(BaseSettings):
         alias="SEGYR_HTTP_CSP",
     )
     http_referrer_policy: str = Field(default="strict-origin-when-cross-origin", alias="SEGYR_HTTP_REFERRER_POLICY")
+    ws_allowed_origins: str = Field(default="*", alias="WS_ALLOWED_ORIGINS")
+    ws_token: str | None = Field(default=None, alias="WS_TOKEN")
     jwt_secret: str = Field(default="CHANGE_ME_JWT_SECRET", alias="SEGYR_JWT_SECRET")
     jwt_algorithm: str = Field(default="HS256", alias="SEGYR_JWT_ALGO")
     jwt_exp_minutes: int = Field(default=60, alias="SEGYR_JWT_EXP_MIN")
