@@ -22,6 +22,7 @@ jobs:
 
     env:
       PYTHONUNBUFFERED: "1"
+      PYTHONPATH: .
       SEGYR_TEST_MODE: "true"
       SEGYR_JWT_SECRET: "ci-jwt-secret"
       SEGYR_DB_PASSWORD: "ci-db-password"
@@ -41,13 +42,13 @@ jobs:
 
       - name: Install deps
         run: |
-          python -m pip install --upgrade pip
+          python -m pip install --upgrade pip setuptools wheel
           pip install -r requirements.txt
 
       - name: Run tests
         run: pytest -q tests
 
-      - name: Run E2E (FULL DEBUG)
+      - name: Run E2E (robuste + debug)
         shell: bash
         run: |
           set -euo pipefail
@@ -55,7 +56,6 @@ jobs:
           echo "=== START MOCK LLM ==="
           python - <<'PY' > mock_llm.log 2>&1 &
           from http.server import BaseHTTPRequestHandler, HTTPServer
-          import json
 
           class H(BaseHTTPRequestHandler):
               def do_GET(self):
@@ -71,8 +71,6 @@ jobs:
 
           echo "=== START GATEWAY ==="
           python -m segyr_bot.gateway > gateway.log 2>&1 &
-          GATEWAY_PID=$!
-
           sleep 3
 
           echo "=== PROCESS CHECK ==="
@@ -81,7 +79,6 @@ jobs:
           echo "=== PORT CHECK ==="
           ss -tuln || true
 
-          echo "=== WAIT FOR PORT ==="
           PORT=""
           for i in {1..60}; do
             if ss -tuln | grep ":8090"; then PORT=8090; break; fi
@@ -97,7 +94,6 @@ jobs:
 
           echo "✅ PORT DETECTED: $PORT"
 
-          echo "=== WAIT FOR HEALTH ==="
           for i in {1..60}; do
             if curl -s "http://127.0.0.1:$PORT/health" > /dev/null; then
               echo "Gateway READY"
